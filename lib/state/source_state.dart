@@ -1,36 +1,57 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:dio/dio.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart' show WidgetsBinding;
+import 'package:webview_flutter/webview_flutter.dart';
 
 import '../data/custom_source_repository.dart';
 import '../models/custom_source.dart';
 import '../models/song.dart';
+import '../services/http_bridge.dart';
 import '../services/source_engine.dart';
 import 'app_state.dart';
+
+/// One long-lived WebView sandbox per custom source. Initializing a source runs
+/// its script once; afterwards every switch/reuse is instant — the engine stays
+/// mounted off-screen inside [SourceState]'s slot map.
+class _SourceSlot {
+  _SourceSlot(this.engine);
+
+  final SourceEngine engine;
+  SourceCapabilities capabilities = SourceCapabilities.empty();
+  bool ready = false;
+  DateTime lastUsed = DateTime.now();
+}
 
 class SourceState extends ChangeNotifier {
   SourceState({
     required this.repository,
-    required this.engine,
+    required this.http,
     required this.appState,
   });
 
+  /// Keep at most this many live sandboxes; the least recently used idle one is
+  /// unmounted when a new source pushes past the cap.
+  static const int _maxLiveEngines = 8;
+
   final CustomSourceRepository repository;
-  final SourceEngine engine;
+  final HttpBridge http;
   final AppState appState;
 
-  bool loading = false;
-  bool importing = false;
-  String? error;
-  SourceCapabilities capabilities = SourceCapabilities.empty();
+  final Map<String, _SourceSlot> _slots = <String, _SourceSlot>{};
+  final Map<String, Future<void>> _initializing = <String, Future<void>>{};
 
   /// Cache of which music platforms each custom source can resolve, keyed by
   /// source id. Used to prefer a source that likely supports a song during the
   /// transparent cross-source fallback in [resolveMusicUrlAutoSwitch].
   final Map<String, Set<String>> _supported = <String, Set<String>>{};
+
+  bool importing = false;
+  String? error;
 
   List<CustomSourceInfo> get sources => repository.sources;
 
@@ -40,66 +61,108 @@ class SourceState extends ChangeNotifier {
     return repository.byId(id);
   }
 
+  SourceCapabilities get capabilities {
+    final id = active?.id;
+    if (id == null) return SourceCapabilities.empty();
+    return _slots[id]?.capabilities ?? SourceCapabilities.empty();
+  }
+
   bool get hasActiveSource => active != null && !capabilities.isEmpty;
+
+  bool get loading => _initializing.containsKey(active?.id ?? '');
+
+  /// Controllers of every live sandbox. [EngineHost] must keep these mounted
+  /// off-screen, otherwise their WKWebViews never run.
+  List<WebViewController> get engineControllers =>
+      _slots.values.map((slot) => slot.engine.controller).toList(growable: false);
 
   Future<void> init() async {
     final source = active;
-    if (source == null) return;
-    final script = await repository.scriptFor(source.id);
-    if (script == null || script.trim().isEmpty) {
-      error = '自定义源脚本不存在';
-      notifyListeners();
-      return;
-    }
-    await _activate(source, script);
+    if (source != null) await _initialize(source);
   }
 
-  Future<void> reload() async {
-    final source = active;
-    if (source == null) {
-      engine.clear();
-      capabilities = SourceCapabilities.empty();
-      notifyListeners();
-      return;
-    }
-    final script = await repository.scriptFor(source.id);
-    if (script == null) return;
-    await _activate(source, script);
-  }
-
-  Future<void> _activate(CustomSourceInfo source, String script) async {
-    loading = true;
-    error = null;
-    notifyListeners();
-    try {
-      capabilities = await engine.activate(source, script);
-      final names = <String>{};
-      for (final name in capabilities.sources.keys) {
-        if (capabilities.supports(name, 'musicUrl')) names.add(name);
-      }
-      _supported[source.id] = names;
-    } catch (e) {
-      capabilities = SourceCapabilities.empty();
-      _supported.remove(source.id);
-      error = '$e';
-    } finally {
-      loading = false;
-      notifyListeners();
-    }
-  }
-
+  /// The user's explicit choice. Writing the selection is immediate; loading
+  /// the script happens in the background and never rewrites this value.
+  /// Cross-source fallback probes (see [resolveMusicUrlAutoSwitch]) call this
+  /// method's internal engine pool only — they never touch settings.
   Future<void> setActive(CustomSourceInfo? source) async {
     appState.settings.activeSourceId = source?.id;
     await appState.repository.save();
-    if (source == null) {
-      engine.clear();
-      capabilities = SourceCapabilities.empty();
-      error = null;
+    error = null;
+    notifyListeners();
+    if (source != null) {
+      unawaited(_initialize(source));
+    }
+  }
+
+  Future<void> _initialize(CustomSourceInfo source) {
+    final pending = _initializing[source.id];
+    if (pending != null) {
+      return pending.catchError((_) {});
+    }
+    final task = _doInitialize(source);
+    _initializing[source.id] = task;
+    return task.whenComplete(() => _initializing.remove(source.id));
+  }
+
+  Future<void> _doInitialize(CustomSourceInfo source) async {
+    var slot = _slots[source.id];
+    if (slot == null) {
+      slot = _SourceSlot(SourceEngine(http));
+      _slots[source.id] = slot;
+      _evictIfNeeded(source.id);
+      notifyListeners();
+      // Give EngineHost one frame to mount the new off-screen web view before
+      // the page-load future below starts waiting for it.
+      await WidgetsBinding.instance.endOfFrame;
+    }
+    slot.lastUsed = DateTime.now();
+
+    final script = await repository.scriptFor(source.id);
+    if (script == null || script.trim().isEmpty) {
+      slot.ready = false;
+      if (active?.id == source.id) error = '自定义源脚本不存在';
       notifyListeners();
       return;
     }
-    await reload();
+    try {
+      slot.capabilities = await slot.engine.activate(source, script);
+      final names = <String>{};
+      for (final name in slot.capabilities.sources.keys) {
+        if (slot.capabilities.supports(name, 'musicUrl')) names.add(name);
+      }
+      _supported[source.id] = names;
+      slot.ready = true;
+      if (active?.id == source.id) error = null;
+    } catch (e) {
+      slot.ready = false;
+      slot.capabilities = SourceCapabilities.empty();
+      _supported.remove(source.id);
+      if (active?.id == source.id) error = '$e';
+    }
+    slot.lastUsed = DateTime.now();
+    notifyListeners();
   }
+
+  void _evictIfNeeded(String keepId) {
+    while (_slots.length >= _maxLiveEngines) {
+      String? victimId;
+      _SourceSlot? victim;
+      for (final entry in _slots.entries) {
+        if (entry.key == keepId || entry.key == appState.settings.activeSourceId) continue;
+        if (_initializing.containsKey(entry.key)) continue;
+        if (victim == null || entry.value.lastUsed.isBefore(victim.lastUsed)) {
+          victim = entry.value;
+          victimId = entry.key;
+        }
+      }
+      if (victimId == null) return;
+      _slots.remove(victimId);
+      _supported.remove(victimId);
+    }
+  }
+
+  Future<void> reload() => init();
 
   Future<CustomSourceInfo?> importSource() async {
     final result = await FilePicker.platform.pickFiles(
@@ -164,8 +227,10 @@ class SourceState extends ChangeNotifier {
         importUrl: uri.toString(),
       );
       notifyListeners();
-      if (active?.id == updated.id) {
-        await reload();
+      // The script changed, so its cached sandbox must run the new code once.
+      _slots.remove(updated.id);
+      if (active?.id == updated.id || _initializing.isEmpty) {
+        await _initialize(updated);
       }
       return updated;
     } finally {
@@ -219,6 +284,7 @@ class SourceState extends ChangeNotifier {
   Future<void> deleteSource(String id) async {
     await repository.delete(id);
     _supported.remove(id);
+    _slots.remove(id);
     if (appState.settings.activeSourceId == id) {
       await setActive(null);
     } else {
@@ -227,20 +293,29 @@ class SourceState extends ChangeNotifier {
   }
 
   Future<Map<String, dynamic>> resolveMusicUrl(Song song, {String? quality}) async {
-    if (song.isLocal) {
-      return <String, dynamic>{'url': song.localPath, 'type': 'local'};
-    }
     final source = active;
     if (source == null) {
       throw StateError('尚未启用自定义源。请先到「设置 → 自定义源」导入并启用音源脚本。');
     }
-    if (capabilities.isEmpty) {
+    return _resolveVia(source, song, quality: quality);
+  }
+
+  Future<Map<String, dynamic>> _resolveVia(
+    CustomSourceInfo source,
+    Song song, {
+    String? quality,
+  }) async {
+    final slot = _slots[source.id];
+    if (slot == null) {
       throw StateError(error ?? '自定义源尚未初始化完成');
     }
-    if (!capabilities.supports(song.source, 'musicUrl')) {
+    if (!slot.ready || slot.capabilities.isEmpty) {
+      throw StateError(error ?? '自定义源尚未初始化完成');
+    }
+    if (!slot.capabilities.supports(song.source, 'musicUrl')) {
       throw StateError('当前自定义源不支持 ${song.source.toUpperCase()} 的音源');
     }
-    final supported = capabilities.qualitysFor(song.source);
+    final supported = slot.capabilities.qualitysFor(song.source);
     var targetQuality = quality ?? appState.settings.quality;
     if (supported.isNotEmpty && !supported.contains(targetQuality)) {
       const order = <String>['128k', '320k', 'flac', 'flac24bit'];
@@ -268,11 +343,12 @@ class SourceState extends ChangeNotifier {
     Object? lastError;
     for (final currentQuality in tryQualitys) {
       try {
-        final result = await engine.requestMusicUrl(
+        final result = await slot.engine.requestMusicUrl(
           source: song.source,
           quality: currentQuality,
           song: song,
         );
+        slot.lastUsed = DateTime.now();
         final data = result['data'];
         if (data is! Map) throw StateError('自定义源返回格式错误');
         final url = '${data['url'] ?? ''}';
@@ -288,12 +364,12 @@ class SourceState extends ChangeNotifier {
     throw lastError ?? StateError('自定义源没有返回播放链接');
   }
 
-  /// Resolve a playable URL, transparently falling back across the configured
-  /// custom sources. Starts from the currently active source, then tries the
-  /// others (preferring any previously known to support this song's platform).
-  /// The first source that returns a URL stays active, so subsequent songs keep
-  /// using it without the user noticing a "source switch". If nothing works the
-  /// original active source is restored before throwing.
+  /// Resolve a playable URL while keeping the user's selection untouched.
+  /// Always tries the selected source first; when it cannot serve this song,
+  /// other imported sources are probed in the background (each initialized
+  /// once and then cached in the engine pool). Whichever source answers gets
+  /// remembered for this song's platform, but the next song starts from the
+  /// selected source again — the user never sees a "source switch".
   Future<Map<String, dynamic>> resolveMusicUrlAutoSwitch(
     Song song, {
     String? quality,
@@ -302,12 +378,13 @@ class SourceState extends ChangeNotifier {
       return <String, dynamic>{'url': song.localPath, 'type': 'local'};
     }
 
-    final original = active;
-    final candidates = <CustomSourceInfo>[];
-    if (original != null) candidates.add(original);
-    final others = sources
-        .where((source) => source.id != original?.id)
-        .toList()
+    final selected = active;
+    if (selected == null) {
+      throw StateError('尚未启用自定义源。请先到「设置 → 自定义源」导入并启用音源脚本。');
+    }
+
+    final candidates = <CustomSourceInfo>[selected];
+    final others = sources.where((source) => source.id != selected.id).toList()
       ..sort((a, b) {
         final aSupports = _supported[a.id]?.contains(song.source) ?? false;
         final bSupports = _supported[b.id]?.contains(song.source) ?? false;
@@ -316,38 +393,33 @@ class SourceState extends ChangeNotifier {
       });
     candidates.addAll(others);
 
-    if (candidates.isEmpty) {
-      // No source configured — let resolveMusicUrl raise its own guidance.
-      return resolveMusicUrl(song, quality: quality);
-    }
-
     Object? lastError;
     for (final candidate in candidates) {
-      if (candidate.id != active?.id) {
-        await setActive(candidate);
+      final slot = _slots[candidate.id];
+      if (slot == null || !slot.ready) {
+        await _initialize(candidate);
       }
-      if (!capabilities.supports(song.source, 'musicUrl')) {
+      final live = _slots[candidate.id];
+      if (live == null || !live.ready || !live.capabilities.supports(song.source, 'musicUrl')) {
         lastError ??= StateError(
           '没有可用的自定义源支持 ${song.source.toUpperCase()} 的音源',
         );
         continue;
       }
       try {
-        return await resolveMusicUrl(song, quality: quality);
+        final resolved = await _resolveVia(candidate, song, quality: quality);
+        _supported.putIfAbsent(candidate.id, () => <String>{}).add(song.source);
+        return resolved;
       } catch (error) {
         lastError = error;
       }
-    }
-
-    if (original != null && active?.id != original.id) {
-      await setActive(original);
     }
     throw lastError ?? StateError('没有可用的自定义源返回播放链接');
   }
 
   @override
   void dispose() {
-    engine.clear();
+    _slots.clear();
     super.dispose();
   }
 }

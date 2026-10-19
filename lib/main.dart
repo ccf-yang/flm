@@ -15,7 +15,6 @@ import 'services/http_bridge.dart';
 import 'services/local_music_service.dart';
 import 'services/online_engine.dart';
 import 'services/player_service.dart';
-import 'services/source_engine.dart';
 import 'state/app_state.dart';
 import 'state/discover_state.dart';
 import 'state/library_state.dart';
@@ -32,7 +31,6 @@ Future<void> main() async {
 
   final httpBridge = HttpBridge();
   final onlineEngine = OnlineEngine(httpBridge);
-  final sourceEngine = SourceEngine(httpBridge);
 
   final playerService = FlmPlayerService();
   await AudioService.init(
@@ -54,7 +52,7 @@ Future<void> main() async {
   final appState = AppState(settingsRepository);
   final sourceState = SourceState(
     repository: customSourceRepository,
-    engine: sourceEngine,
+    http: httpBridge,
     appState: appState,
   );
   final libraryState = LibraryState(
@@ -102,7 +100,6 @@ Future<void> main() async {
         ChangeNotifierProvider<SearchState>.value(value: searchState),
         ChangeNotifierProvider<DiscoverState>.value(value: discoverState),
         Provider<OnlineEngine>.value(value: onlineEngine),
-        Provider<SourceEngine>.value(value: sourceEngine),
         Provider<FlmPlayerService>.value(value: playerService),
         Provider<BackupService>.value(value: backupService),
       ],

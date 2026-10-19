@@ -89,6 +89,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   DateTime _lastPreloadAttempt = DateTime.fromMillisecondsSinceEpoch(0);
   Timer? _settingsSaveTimer;
   bool _resumeOnForeground = false;
+  int _autoSkips = 0;
 
   List<Song> get queue => List<Song>.unmodifiable(_queue);
   int get index => _index;
@@ -192,6 +193,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       _statusText = null;
       _errorText = null;
       _isPlaying = true;
+      _autoSkips = 0;
       final actualDuration = service.player.duration ?? service.duration;
       await service.setMediaItem(song, duration: actualDuration);
       if (song.interval.trim().isEmpty && actualDuration > Duration.zero) {
@@ -220,6 +222,20 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       }
       _loading = false;
       _isPlaying = false;
+      // All configured sources failed for this song: keep moving to the next
+      // one instead of stalling, until either something plays or the whole
+      // queue has failed a full round.
+      if (!song.isLocal &&
+          sourceState.hasActiveSource &&
+          _queue.length > 1 &&
+          _autoSkips < _queue.length) {
+        _autoSkips++;
+        final nextIdx = (_index + 1) % _queue.length;
+        _statusText = '这首无法播放，正在试下一首…';
+        _notify();
+        await playSong(_queue[nextIdx], queue: _queue, index: nextIdx);
+        return;
+      }
       _errorText = _friendlyError(error);
       _statusText = _errorText;
       _notify();
@@ -230,21 +246,16 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<String> _resolveUrl(Song song) async {
     final key = _songKey(song);
-    final activeSourceId = sourceState.active?.id ?? '';
     final cached = _urlCache[key];
-    if (cached != null &&
-        cached.sourceId == activeSourceId &&
-        cached.expiresAt.isAfter(DateTime.now())) {
+    if (cached != null && cached.expiresAt.isAfter(DateTime.now())) {
       return cached.url;
     }
     final resolved = await sourceState.resolveMusicUrlAutoSwitch(song);
     final url = '${resolved['url'] ?? ''}';
     if (url.isEmpty) throw StateError('没有获取到播放链接');
-    final servingSourceId = sourceState.active?.id ?? '';
     if (_urlCache.length > 30) _urlCache.clear();
     _urlCache[key] = _CachedUrl(
       url: url,
-      sourceId: servingSourceId,
       expiresAt: DateTime.now().add(const Duration(minutes: 10)),
     );
     return url;
@@ -257,11 +268,8 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     final song = _queue[nextIndex];
     if (song.isLocal || appState.isDisliked(song)) return;
     final key = _songKey(song);
-    final cacheSourceId = sourceState.active?.id ?? '';
     final cached = _urlCache[key];
-    if (cached != null &&
-        cached.sourceId == cacheSourceId &&
-        cached.expiresAt.isAfter(DateTime.now())) {
+    if (cached != null && cached.expiresAt.isAfter(DateTime.now())) {
       return;
     }
     final now = DateTime.now();
@@ -269,13 +277,12 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     _lastPreloadAttempt = now;
     if (!_preloading.add(key)) return;
     try {
-      final resolved = await sourceState.resolveMusicUrl(song);
+      final resolved = await sourceState.resolveMusicUrlAutoSwitch(song);
       final url = '${resolved['url'] ?? ''}';
       if (url.isEmpty) return;
       if (_urlCache.length > 30) _urlCache.clear();
       _urlCache[key] = _CachedUrl(
         url: url,
-        sourceId: cacheSourceId,
         expiresAt: DateTime.now().add(const Duration(minutes: 10)),
       );
     } catch (_) {
@@ -611,6 +618,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> clearQueue() async {
     _playToken++;
+    _autoSkips = 0;
     _queue = <Song>[];
     _index = -1;
     _current = null;
@@ -675,11 +683,9 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
 class _CachedUrl {
   const _CachedUrl({
     required this.url,
-    required this.sourceId,
     required this.expiresAt,
   });
 
   final String url;
-  final String sourceId;
   final DateTime expiresAt;
 }

@@ -3,7 +3,6 @@ import 'package:provider/provider.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import '../services/online_engine.dart';
-import '../services/source_engine.dart';
 import '../state/app_state.dart';
 import '../state/player_state.dart';
 import '../state/source_state.dart';
@@ -39,7 +38,9 @@ class _EngineHostState extends State<EngineHost> {
   @override
   Widget build(BuildContext context) {
     final online = context.read<OnlineEngine>();
-    final source = context.read<SourceEngine>();
+    // Watch so every lazily created per-source sandbox gets mounted the
+    // moment SourceState adds it to the pool.
+    final sourceState = context.watch<SourceState>();
     return Stack(
       children: <Widget>[
         widget.child,
@@ -55,18 +56,19 @@ class _EngineHostState extends State<EngineHost> {
             ),
           ),
         ),
-        Positioned(
-          left: 0,
-          top: 0,
-          width: 1,
-          height: 1,
-          child: IgnorePointer(
-            child: Opacity(
-              opacity: 0.01,
-              child: WebViewWidget(controller: source.controller),
+        for (final controller in sourceState.engineControllers)
+          Positioned(
+            left: 0,
+            top: 0,
+            width: 1,
+            height: 1,
+            child: IgnorePointer(
+              child: Opacity(
+                opacity: 0.01,
+                child: WebViewWidget(key: ValueKey(controller), controller: controller),
+              ),
             ),
           ),
-        ),
       ],
     );
   }

@@ -191,11 +191,7 @@ class CustomSourcesScreen extends StatelessWidget {
   ) async {
     await state.setActive(source);
     if (!context.mounted) return;
-    if (state.error != null) {
-      flmToast(context, '启用失败: ${state.error}');
-    } else {
-      flmToast(context, '已启用「${source.name}」');
-    }
+    flmToast(context, '已选择「${source.name}」');
   }
 
   Future<void> _updateFromUrl(
