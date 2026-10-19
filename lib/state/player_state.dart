@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:math';
 
-import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:path/path.dart' as p;
 
@@ -17,7 +17,7 @@ import 'app_state.dart';
 import 'library_state.dart';
 import 'source_state.dart';
 
-class PlayerController extends ChangeNotifier {
+class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   PlayerController({
     required this.service,
     required this.sourceState,
@@ -55,6 +55,7 @@ class PlayerController extends ChangeNotifier {
     service.onSkipPrevious = () => previous();
     service.onCompleted = _handleCompleted;
     sourceState.addListener(_onSourceChanged);
+    WidgetsBinding.instance.addObserver(this);
     _progressTimer = Timer.periodic(const Duration(seconds: 5), (_) => _saveProgress());
     _restoreLastPlayback();
   }
@@ -87,6 +88,7 @@ class PlayerController extends ChangeNotifier {
   final Set<String> _preloading = <String>{};
   DateTime _lastPreloadAttempt = DateTime.fromMillisecondsSinceEpoch(0);
   Timer? _settingsSaveTimer;
+  bool _resumeOnForeground = false;
 
   List<Song> get queue => List<Song>.unmodifiable(_queue);
   int get index => _index;
@@ -472,6 +474,39 @@ class PlayerController extends ChangeNotifier {
     unawaited(_loadAndPlay(song, initialPosition: _position));
   }
 
+  /// iOS suspends the app shortly after it is backgrounded or the screen locks,
+  /// which pauses the audio even though `UIBackgroundModes: audio` is set (most
+  /// visibly on a re-signed / free-provisioning build). When the user comes back
+  /// we resume automatically instead of forcing another tap on play. We only do
+  /// this if audio was actually playing when we left, so a deliberate pause is
+  /// never hijacked.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (_disposed) return;
+    switch (state) {
+      case AppLifecycleState.inactive:
+      case AppLifecycleState.hidden:
+      case AppLifecycleState.paused:
+        if (_isPlaying && !_loading) _resumeOnForeground = true;
+        break;
+      case AppLifecycleState.resumed:
+        if (!_resumeOnForeground) return;
+        _resumeOnForeground = false;
+        final song = _current;
+        if (song == null || _isPlaying || _loading) return;
+        final processing = service.player.processingState;
+        if (processing == ProcessingState.idle ||
+            processing == ProcessingState.completed) {
+          unawaited(_loadAndPlay(song, initialPosition: _position));
+        } else {
+          unawaited(service.play());
+        }
+        break;
+      case AppLifecycleState.detached:
+        break;
+    }
+  }
+
   Future<void> reloadLyrics() async {
     final song = _current;
     if (song != null) await _loadLyrics(song);
@@ -591,6 +626,7 @@ class PlayerController extends ChangeNotifier {
     _sleepTimer?.cancel();
     _settingsSaveTimer?.cancel();
     _progressTimer.cancel();
+    WidgetsBinding.instance.removeObserver(this);
     sourceState.removeListener(_onSourceChanged);
     for (final subscription in _subscriptions) {
       unawaited(subscription.cancel());

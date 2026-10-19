@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 
-import '../../core/theme.dart';
 import '../../models/lyric.dart';
 
 class LyricView extends StatefulWidget {
@@ -54,10 +53,10 @@ class _LyricViewState extends State<LyricView> {
   @override
   Widget build(BuildContext context) {
     if (widget.lines.isEmpty) {
-      return Center(
+      return const Center(
         child: Text(
           '暂无歌词',
-          style: TextStyle(fontSize: 13, color: faintFor(context)),
+          style: TextStyle(fontSize: 13, color: Color(0x8CFFFFFF)),
         ),
       );
     }
@@ -89,12 +88,12 @@ class _LyricViewState extends State<LyricView> {
                         fontWeight: active ? FontWeight.w800 : FontWeight.w500,
                         letterSpacing: active ? -0.43 : 0,
                         color: active
-                            ? accentFor(context)
-                            : textFor(context).withValues(alpha: 0.48),
+                            ? const Color(0xFF9AF4D2)
+                            : const Color(0x99FFFFFF),
                         shadows: active
-                            ? <Shadow>[
+                            ? const <Shadow>[
                                 Shadow(
-                                  color: accentFor(context).withValues(alpha: 0.32),
+                                  color: Color(0x529AF4D2),
                                   blurRadius: 18,
                                 ),
                               ]
@@ -114,8 +113,8 @@ class _LyricViewState extends State<LyricView> {
                           fontSize: active ? 11 : 10.5,
                           height: 1.45,
                           color: active
-                              ? accentFor(context).withValues(alpha: 0.62)
-                              : faintFor(context),
+                              ? const Color(0xB39AF4D2)
+                              : const Color(0x66FFFFFF),
                         ),
                       ),
                     ],

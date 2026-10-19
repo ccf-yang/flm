@@ -47,6 +47,7 @@ Future<void> main() async {
   try {
     final session = await AudioSession.instance;
     await session.configure(const AudioSessionConfiguration.music());
+    await session.setActive(true);
   } catch (_) {}
 
   final appState = AppState(settingsRepository);
