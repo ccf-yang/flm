@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import '../models/custom_source.dart';
@@ -217,7 +218,12 @@ class SourceEngine {
         await _handleHttpRequest(key, payload);
         break;
       case 'cancelRequest':
-        final requestKey = '${payload['requestKey'] ?? ''}';
+        // 沙箱端 nativeCall('cancelRequest', requestKey) 直接把 requestKey
+        // 字符串作为 data 发送，不是对象。
+        final raw = decoded['data'];
+        final requestKey = raw is String
+            ? raw
+            : '${payload['requestKey'] ?? ''}';
         final id = _httpRequestIds.remove(requestKey) ?? requestKey.hashCode;
         _http.cancel(id);
         break;
@@ -252,6 +258,13 @@ class SourceEngine {
     final requestKey = '${payload['requestKey'] ?? ''}';
     final id = requestKey.hashCode & 0x7fffffff;
     _httpRequestIds[requestKey] = id;
+    // 音源脚本沙箱 (user_source.html) 的 handleNativeResponse 期望的字段是
+    // { requestKey, error, response }，与 lx-music-mobile 的
+    // SendResponseParams 完全一致；这里曾错发成 { status, result }，
+    // 导致脚本拿到的 response 为 undefined，回调抛错后整条 musicUrl
+    // 链路永远不 resolve，宿主只能等到超时（表现为"卡在获取音频地址"）。
+    dynamic result;
+    String? failure;
     try {
       final options = payload['options'] is Map
           ? Map<String, dynamic>.from(payload['options'] as Map)
@@ -265,23 +278,23 @@ class SourceEngine {
           // Keep plain text (HTML, XML, LRC ...).
         }
       }
+      result = response;
+    } catch (error) {
+      failure = '$error';
+    } finally {
+      _httpRequestIds.remove(requestKey);
+    }
+
+    try {
       await _controller.runJavaScript(
         '__lx_native__(${jsonEncode(key)}, \'response\', ${jsonEncode(jsonEncode(<String, dynamic>{
           'requestKey': requestKey,
-          'status': true,
-          'result': response,
+          'error': failure,
+          'response': failure == null ? result : null,
         }))});',
       );
     } catch (error) {
-      await _controller.runJavaScript(
-        '__lx_native__(${jsonEncode(key)}, \'response\', ${jsonEncode(jsonEncode(<String, dynamic>{
-          'requestKey': requestKey,
-          'status': false,
-          'errorMessage': '$error',
-        }))});',
-      );
-    } finally {
-      _httpRequestIds.remove(requestKey);
+      debugPrint('[flm][source-engine] deliver http response failed: $error');
     }
   }
 
