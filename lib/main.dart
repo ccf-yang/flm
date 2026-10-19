@@ -10,6 +10,7 @@ import 'data/custom_source_repository.dart';
 import 'data/library_repository.dart';
 import 'data/settings_repository.dart';
 import 'services/backup_service.dart';
+import 'services/debug_log.dart';
 import 'services/download_service.dart';
 import 'services/http_bridge.dart';
 import 'services/local_music_service.dart';
@@ -50,10 +51,13 @@ Future<void> main() async {
   } catch (_) {}
 
   final appState = AppState(settingsRepository);
+  final debugLog = DebugLog(enabled: appState.settings.debugEnabled);
+  httpBridge.debugLog = debugLog;
   final sourceState = SourceState(
     repository: customSourceRepository,
     http: httpBridge,
     appState: appState,
+    debugLog: debugLog,
   );
   final libraryState = LibraryState(
     repository: libraryRepository,
@@ -102,6 +106,7 @@ Future<void> main() async {
         Provider<OnlineEngine>.value(value: onlineEngine),
         Provider<FlmPlayerService>.value(value: playerService),
         Provider<BackupService>.value(value: backupService),
+        ChangeNotifierProvider<DebugLog>.value(value: debugLog),
       ],
       child: const FlmApp(),
     ),

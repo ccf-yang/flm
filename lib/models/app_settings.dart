@@ -39,6 +39,7 @@ class AppSettings {
     this.leaderboardSource = 'kw',
     this.miniPlayerX = -1,
     this.miniPlayerY = -1,
+    this.debugEnabled = false,
   })  : searchHistory = searchHistory ?? <String>[],
         dislikedKeys = dislikedKeys ?? <String>[];
 
@@ -64,6 +65,8 @@ class AppSettings {
   /// usable area. Negative means "not set yet" (use the default corner).
   double miniPlayerX;
   double miniPlayerY;
+  /// Master switch for the request-recording debug page (off by default).
+  bool debugEnabled;
 
   Song? get lastSong {
     final json = lastSongJson;
@@ -134,6 +137,7 @@ class AppSettings {
       leaderboardSource: '${json['leaderboardSource'] ?? 'kw'}',
       miniPlayerX: (json['miniPlayerX'] as num?)?.toDouble() ?? -1,
       miniPlayerY: (json['miniPlayerY'] as num?)?.toDouble() ?? -1,
+      debugEnabled: json['debugEnabled'] == true,
     );
   }
 
@@ -158,5 +162,6 @@ class AppSettings {
         'leaderboardSource': leaderboardSource,
         'miniPlayerX': miniPlayerX,
         'miniPlayerY': miniPlayerY,
+        'debugEnabled': debugEnabled,
       };
 }

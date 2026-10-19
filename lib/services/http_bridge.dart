@@ -3,6 +3,8 @@ import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 
+import 'debug_log.dart';
+
 class HttpBridge {
   HttpBridge()
       : _dio = Dio(
@@ -26,11 +28,16 @@ class HttpBridge {
   final _CookieJar _cookies = _CookieJar();
   final Map<int, CancelToken> _cancelTokens = <int, CancelToken>{};
 
+  /// When non-null and its `enabled` flag is on, every request/response is
+  /// mirrored here for the in-app debug page.
+  DebugLog? debugLog;
+
   Future<Map<String, dynamic>> request(
     int id,
     String url,
     Map<String, dynamic> options,
   ) async {
+    final startedAt = DateTime.now();
     final uri = Uri.parse(url);
     final method = '${options['method'] ?? 'get'}'.toUpperCase();
     final headers = <String, String>{};
@@ -87,6 +94,10 @@ class HttpBridge {
         : null;
     final cancelToken = CancelToken();
     _cancelTokens[id] = cancelToken;
+    debugLog?.record('HTTP $method $url', <String, Object?>{
+      '请求头': headers,
+      '请求体': data,
+    });
 
     try {
       final response = await _dio.request<dynamic>(
@@ -125,6 +136,13 @@ class HttpBridge {
         textBody = responseData is String ? responseData : jsonEncode(responseData);
       }
 
+      debugLog?.record(
+          'HTTP 响应 ${response.statusCode ?? 0} $url', <String, Object?>{
+        '耗时': '${DateTime.now().difference(startedAt).inMilliseconds}ms',
+        '响应头': responseHeaders,
+        '响应体': textBody,
+      });
+
       return <String, dynamic>{
         'statusCode': response.statusCode ?? 0,
         'statusMessage': response.statusMessage ?? '',
@@ -133,6 +151,12 @@ class HttpBridge {
         'url': url,
         'ok': (response.statusCode ?? 0) >= 200 && (response.statusCode ?? 0) < 300,
       };
+    } catch (error) {
+      debugLog?.record('HTTP 失败 $url', <String, Object?>{
+        '耗时': '${DateTime.now().difference(startedAt).inMilliseconds}ms',
+        '错误': '$error',
+      });
+      rethrow;
     } finally {
       _cancelTokens.remove(id);
     }

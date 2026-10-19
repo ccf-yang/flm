@@ -6,12 +6,14 @@ import 'package:provider/provider.dart';
 import '../../core/theme.dart';
 import '../../models/app_settings.dart';
 import '../../services/backup_service.dart';
+import '../../services/debug_log.dart';
 import '../../state/app_state.dart';
 import '../../state/library_state.dart';
 import '../../state/player_state.dart';
 import '../../state/source_state.dart';
 import '../kit.dart';
 import 'custom_sources_screen.dart';
+import 'debug_screen.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
@@ -202,6 +204,35 @@ class SettingsScreen extends StatelessWidget {
                               Navigator.of(context).push(
                                 MaterialPageRoute<void>(
                                   builder: (_) => const CustomSourcesScreen(),
+                                ),
+                              );
+                            },
+                          ),
+                          _SettingRow(
+                            icon: CupertinoIcons.wrench,
+                            label: '调试',
+                            caption: settings.debugEnabled
+                                ? '请求记录开启中 · 点击查看日志'
+                                : '记录所有请求的 URL / 头部 / Body，便于排查',
+                            trailing: IgnorePointer(
+                              child: CupertinoSwitch(
+                                value: settings.debugEnabled,
+                                activeTrackColor: accentStrongFor(context),
+                                onChanged: null,
+                              ),
+                            ),
+                            onTap: () {
+                              if (!settings.debugEnabled) {
+                                // First tap arms the recorder; from then on the
+                                // row just opens the log page.
+                                appState.update(
+                                  (settings) => settings.debugEnabled = true,
+                                );
+                                context.read<DebugLog>().setEnabled(true);
+                              }
+                              Navigator.of(context).push(
+                                MaterialPageRoute<void>(
+                                  builder: (_) => const DebugScreen(),
                                 ),
                               );
                             },

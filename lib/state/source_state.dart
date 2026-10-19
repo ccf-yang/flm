@@ -11,6 +11,7 @@ import 'package:webview_flutter/webview_flutter.dart';
 import '../data/custom_source_repository.dart';
 import '../models/custom_source.dart';
 import '../models/song.dart';
+import '../services/debug_log.dart';
 import '../services/http_bridge.dart';
 import '../services/source_engine.dart';
 import 'app_state.dart';
@@ -19,7 +20,11 @@ import 'app_state.dart';
 /// its script once; afterwards every switch/reuse is instant — the engine stays
 /// mounted off-screen inside [SourceState]'s slot map.
 class _SourceSlot {
-  _SourceSlot(this.engine);
+  _SourceSlot(this.engine, DebugLog? log) {
+    if (log != null) {
+      engine.onEvent = (title, fields) => log.record(title, fields);
+    }
+  }
 
   final SourceEngine engine;
   SourceCapabilities capabilities = SourceCapabilities.empty();
@@ -32,6 +37,7 @@ class SourceState extends ChangeNotifier {
     required this.repository,
     required this.http,
     required this.appState,
+    this.debugLog,
   });
 
   /// Keep at most this many live sandboxes; the least recently used idle one is
@@ -41,6 +47,11 @@ class SourceState extends ChangeNotifier {
   final CustomSourceRepository repository;
   final HttpBridge http;
   final AppState appState;
+  final DebugLog? debugLog;
+
+  /// Reason of the most recent failed cross-source resolution, surfaced in the
+  /// debug log so "why can't this song play" is answerable from the phone.
+  String? _lastPoolError;
 
   final Map<String, _SourceSlot> _slots = <String, _SourceSlot>{};
   final Map<String, Future<void>> _initializing = <String, Future<void>>{};
@@ -68,6 +79,9 @@ class SourceState extends ChangeNotifier {
   }
 
   bool get hasActiveSource => active != null && !capabilities.isEmpty;
+
+  /// Why the previous cross-source resolution failed (null after a success).
+  String? get lastPoolError => _lastPoolError;
 
   bool get loading => _initializing.containsKey(active?.id ?? '');
 
@@ -108,7 +122,7 @@ class SourceState extends ChangeNotifier {
   Future<void> _doInitialize(CustomSourceInfo source) async {
     var slot = _slots[source.id];
     if (slot == null) {
-      slot = _SourceSlot(SourceEngine(http));
+      slot = _SourceSlot(SourceEngine(http), debugLog);
       _slots[source.id] = slot;
       _evictIfNeeded(source.id);
       notifyListeners();
@@ -126,9 +140,16 @@ class SourceState extends ChangeNotifier {
     if (script == null || script.trim().isEmpty) {
       slot.ready = false;
       if (active?.id == source.id) error = '自定义源脚本不存在';
+      debugLog?.record('源初始化失败 ${source.name}', <String, Object?>{
+        '原因': '脚本不存在',
+      });
       notifyListeners();
       return;
     }
+    debugLog?.record('源初始化开始 ${source.name}', <String, Object?>{
+      'id': source.id,
+      '脚本长度': script.length,
+    });
     try {
       slot.capabilities = await slot.engine.activate(source, script);
       final names = <String>{};
@@ -138,11 +159,17 @@ class SourceState extends ChangeNotifier {
       _supported[source.id] = names;
       slot.ready = true;
       if (active?.id == source.id) error = null;
+      debugLog?.record('源就绪 ${source.name}', <String, Object?>{
+        '平台': names.join('、'),
+      });
     } catch (e) {
       slot.ready = false;
       slot.capabilities = SourceCapabilities.empty();
       _supported.remove(source.id);
       if (active?.id == source.id) error = '$e';
+      debugLog?.record('源初始化失败 ${source.name}', <String, Object?>{
+        '原因': '$e',
+      });
     }
     slot.lastUsed = DateTime.now();
     notifyListeners();
@@ -346,6 +373,12 @@ class SourceState extends ChangeNotifier {
 
     Object? lastError;
     for (final currentQuality in tryQualitys) {
+      final attemptId = 'url_${DateTime.now().microsecondsSinceEpoch % 100000}';
+      debugLog?.record('解析 $attemptId → ${source.name}', <String, Object?>{
+        '歌曲': '${song.name} - ${song.singer}',
+        '平台': song.source,
+        '音质': currentQuality,
+      });
       try {
         final result = await slot.engine.requestMusicUrl(
           source: song.source,
@@ -357,12 +390,20 @@ class SourceState extends ChangeNotifier {
         if (data is! Map) throw StateError('自定义源返回格式错误');
         final url = '${data['url'] ?? ''}';
         if (url.isEmpty) throw StateError('自定义源没有返回播放链接');
+        debugLog?.record('解析成功 $attemptId → ${source.name}', <String, Object?>{
+          '音质': currentQuality,
+          '地址': url,
+        });
         return <String, dynamic>{
           'url': url,
           'type': '${data['type'] ?? currentQuality}',
         };
       } catch (error) {
         lastError = error;
+        debugLog?.record('解析失败 $attemptId → ${source.name}', <String, Object?>{
+          '音质': currentQuality,
+          '原因': '$error',
+        });
       }
     }
     throw lastError ?? StateError('自定义源没有返回播放链接');
@@ -386,6 +427,12 @@ class SourceState extends ChangeNotifier {
     if (selected == null) {
       throw StateError('尚未启用自定义源。请先到「设置 → 自定义源」导入并启用音源脚本。');
     }
+
+    _lastPoolError = null;
+    debugLog?.record('取链开始 ${song.name} - ${song.singer}', <String, Object?>{
+      '平台': song.source,
+      '首选源': selected.name,
+    });
 
     final candidates = <CustomSourceInfo>[selected];
     final others = sources.where((source) => source.id != selected.id).toList()
@@ -416,9 +463,15 @@ class SourceState extends ChangeNotifier {
         return resolved;
       } catch (error) {
         lastError = error;
+        _lastPoolError = '${candidate.name}: $error';
       }
     }
-    throw lastError ?? StateError('没有可用的自定义源返回播放链接');
+    final failure = lastError ?? StateError('没有可用的自定义源返回播放链接');
+    debugLog?.record('取链全部失败 ${song.name}', <String, Object?>{
+      '最后错误': _lastPoolError ?? '$failure',
+      '尝试源数': candidates.length,
+    });
+    throw failure;
   }
 
   @override

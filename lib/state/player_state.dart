@@ -97,6 +97,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   int _autoSkips = 0;
   bool _resumeAfterInterruption = false;
   bool _appInForeground = true;
+  bool _userPaused = false;
   StreamSubscription<AudioInterruptionEvent>? _interruptionSubscription;
   StreamSubscription<void>? _noisySubscription;
 
@@ -214,6 +215,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     _lyrics = const <LyricLine>[];
     _activeLine = -1;
     _errorText = null;
+    _userPaused = false;
     _statusText = '正在准备播放…';
     _notify();
     await _loadAndPlay(song);
@@ -280,19 +282,28 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       // one instead of stalling, until either something plays or the whole
       // queue has failed a full round.
       if (_appInForeground &&
+          !_userPaused &&
           !song.isLocal &&
           sourceState.hasActiveSource &&
           _queue.length > 1 &&
           _autoSkips < _queue.length) {
         _autoSkips++;
         final nextIdx = (_index + 1) % _queue.length;
-        _statusText = '这首无法播放，正在试下一首…';
+        _statusText = sourceState.lastPoolError == null
+            ? '这首无法播放，正在试下一首…'
+            : '无法播放：${sourceState.lastPoolError}';
         _notify();
         await playSong(_queue[nextIdx], queue: _queue, index: nextIdx);
         return;
       }
       _errorText = _friendlyError(error);
-      _statusText = _errorText;
+      var reason = _errorText!;
+      final poolError = sourceState.lastPoolError;
+      if (!song.isLocal && poolError != null && !reason.contains('音源')) {
+        reason = '$reason（$poolError）';
+      }
+      _errorText = reason;
+      _statusText = reason;
       _notify();
     }
   }
@@ -408,10 +419,26 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       }
       return;
     }
+    // Pressing the button while the auto-skip chain is probing unreachable
+    // sources stops the chain outright: the stale attempt is dropped by its
+    // token and nothing advances until the user presses play again.
+    if (_loading) {
+      _playToken++;
+      _loading = false;
+      _isPlaying = false;
+      _userPaused = true;
+      _statusText = '已停止';
+      _errorText = null;
+      unawaited(service.pause());
+      _notify();
+      return;
+    }
     if (_isPlaying) {
+      _userPaused = true;
       await service.pause();
       return;
     }
+    _userPaused = false;
     final processing = service.player.processingState;
     if (processing == ProcessingState.idle ||
         processing == ProcessingState.completed ||
@@ -427,6 +454,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> play() async {
+    _userPaused = false;
     if (_current == null) {
       await togglePlay();
       return;
@@ -443,7 +471,13 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  Future<void> pause() => service.pause();
+  Future<void> pause() async {
+    _playToken++;
+    _loading = false;
+    _userPaused = true;
+    await service.pause();
+    _notify();
+  }
 
   Future<void> seek(Duration position) async {
     if (_current == null) return;
@@ -453,6 +487,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> next({bool auto = false}) async {
+    _userPaused = false;
     if (_queue.isEmpty) return;
     if (_current == null) {
       await playSong(_queue.first, queue: _queue, index: 0);
@@ -527,6 +562,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> previous() async {
+    _userPaused = false;
     if (_current == null) return;
     if (_position > const Duration(seconds: 3)) {
       await seek(Duration.zero);
@@ -562,7 +598,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   /// "tap to continue" state or from a foreground resume.
   void _onSourceChanged() {
     if (_disposed) return;
-    if (_loading || _isPlaying) return;
+    if (_loading || _isPlaying || _userPaused) return;
     if (_errorText == null) return;
     final song = _current;
     if (song == null || song.isLocal) return;
@@ -604,6 +640,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> _resumeAfterForeground(Song song) async {
+    _userPaused = false;
     await _activateSession();
     if (_disposed) return;
 

@@ -50,7 +50,12 @@ class SourceEngine {
   SourceCapabilities _capabilities = SourceCapabilities.empty();
   String? _script;
   bool _loaded = false;
+  int _consecutiveTimeouts = 0;
   Future<void>? _recovery;
+
+  /// Optional mirror of engine-level events (timeouts, recovery) for the
+  /// in-app debug page.
+  void Function(String title, Map<String, Object?> fields)? onEvent;
 
   WebViewController get controller => _controller;
   CustomSourceInfo? get current => _current;
@@ -66,7 +71,10 @@ class SourceEngine {
   }
 
   Future<SourceCapabilities> activate(CustomSourceInfo info, String script) async {
-    await load();
+    // The sandbox's `lx_setup` deletes itself after running (see
+    // assets/js/user_source.html), so a source can only ever be prepared on a
+    // *freshly loaded* page. Always reload here; the one-time cost per source
+    // is paid at init, never on the play path.
     _pageReady = Completer<void>();
     await _controller.loadFlutterAsset('assets/js/user_source.html');
     await _pageReady!.future.timeout(const Duration(seconds: 30));
@@ -74,6 +82,7 @@ class SourceEngine {
     _current = info;
     _script = script;
     _capabilities = SourceCapabilities.empty();
+    _consecutiveTimeouts = 0;
     for (final waiter in _requestWaiters.values) {
       if (!waiter.isCompleted) {
         waiter.completeError(StateError('自定义源已切换'));
@@ -227,7 +236,21 @@ class SourceEngine {
       return await completer.future.timeout(const Duration(seconds: 30));
     } on TimeoutException {
       _requestWaiters.remove(requestKey);
-      _loaded = false;
+      // A single timeout is usually a slow/dead platform *inside* the script,
+      // not a dead WebView. Only a second consecutive timeout is treated as
+      // sandbox suspension and triggers a full reload + re-activation. (The
+      // sandbox's lx_setup is one-shot per page load, so reloading eagerly on
+      // first timeout used to leave the engine permanently broken.)
+      _consecutiveTimeouts++;
+      onEvent?.call('音源超时 ${_current?.name ?? ''}', <String, Object?>{
+        'action': '$source/$action',
+        'quality': '${info['type'] ?? ''}',
+        '连续超时': _consecutiveTimeouts,
+      });
+      if (_consecutiveTimeouts >= 2) {
+        _loaded = false;
+        unawaited(_ensureReady());
+      }
       throw TimeoutException('自定义源响应超时');
     }
   }
@@ -333,6 +356,11 @@ class SourceEngine {
         }))});',
       );
     } catch (error) {
+      // runJavaScript failing outright means the content process is gone.
+      _loaded = false;
+      onEvent?.call('音源投递失败 ${_current?.name ?? ''}', <String, Object?>{
+        '错误': '$error',
+      });
       debugPrint('[flm][source-engine] deliver http response failed: $error');
     }
   }
@@ -341,6 +369,8 @@ class SourceEngine {
     final requestKey = '${payload['requestKey'] ?? ''}';
     final completer = _requestWaiters.remove(requestKey);
     if (completer == null || completer.isCompleted) return;
+    // Any reply from the sandbox proves it is alive.
+    _consecutiveTimeouts = 0;
     if (payload['status'] == true) {
       final result = payload['result'];
       if (result is Map) {
