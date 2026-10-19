@@ -73,6 +73,7 @@ class CustomSourcesScreen extends StatelessWidget {
                     if (source.version.isNotEmpty) 'v${source.version}',
                     if (source.author.isNotEmpty) source.author,
                     if (source.createdAt > 0) _dateLabel(source.createdAt),
+                    if (source.importUrl != null) '在线源',
                   ].join(' · '),
                 ),
                 trailing: Row(
@@ -80,6 +81,12 @@ class CustomSourcesScreen extends StatelessWidget {
                   children: <Widget>[
                     if (active)
                       const Icon(Icons.check_circle_rounded, color: AppColors.accent),
+                    if (source.importUrl != null)
+                      IconButton(
+                        tooltip: '从原 URL 更新',
+                        onPressed: () => _updateFromUrl(context, state, source),
+                        icon: const Icon(Icons.refresh_rounded, size: 20),
+                      ),
                     IconButton(
                       tooltip: '删除',
                       onPressed: () => _delete(context, state, source),
@@ -255,6 +262,25 @@ class CustomSourcesScreen extends StatelessWidget {
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('已启用「${source.name}」')),
+      );
+    }
+  }
+
+  Future<void> _updateFromUrl(
+    BuildContext context,
+    SourceState state,
+    CustomSourceInfo source,
+  ) async {
+    try {
+      final updated = await state.updateSourceFromUrl(source);
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已从原 URL 更新「${updated.name}」')),
+      );
+    } catch (error) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('更新失败: $error')),
       );
     }
   }

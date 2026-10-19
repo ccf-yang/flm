@@ -6,6 +6,7 @@ class CustomSourceInfo {
     this.version = '',
     this.author = '',
     this.homepage = '',
+    this.importUrl,
     this.createdAt = 0,
   });
 
@@ -15,9 +16,14 @@ class CustomSourceInfo {
   final String version;
   final String author;
   final String homepage;
+  final String? importUrl;
   final int createdAt;
 
   factory CustomSourceInfo.fromJson(Map<String, dynamic> json) {
+    final importUrlRaw = json['importUrl'];
+    final importUrl = importUrlRaw is String && importUrlRaw.trim().isNotEmpty
+        ? importUrlRaw.trim()
+        : null;
     return CustomSourceInfo(
       id: '${json['id'] ?? ''}',
       name: '${json['name'] ?? '未命名源'}',
@@ -25,6 +31,7 @@ class CustomSourceInfo {
       version: '${json['version'] ?? ''}',
       author: '${json['author'] ?? ''}',
       homepage: '${json['homepage'] ?? ''}',
+      importUrl: importUrl,
       createdAt: (json['createdAt'] as num?)?.toInt() ?? 0,
     );
   }
@@ -36,8 +43,29 @@ class CustomSourceInfo {
         'version': version,
         'author': author,
         'homepage': homepage,
+        if (importUrl != null && importUrl!.isNotEmpty) 'importUrl': importUrl,
         'createdAt': createdAt,
       };
+
+  CustomSourceInfo copyWith({
+    String? name,
+    String? description,
+    String? version,
+    String? author,
+    String? homepage,
+    String? importUrl,
+  }) {
+    return CustomSourceInfo(
+      id: id,
+      name: name ?? this.name,
+      description: description ?? this.description,
+      version: version ?? this.version,
+      author: author ?? this.author,
+      homepage: homepage ?? this.homepage,
+      importUrl: importUrl ?? this.importUrl,
+      createdAt: createdAt,
+    );
+  }
 }
 
 class SourceCapabilities {

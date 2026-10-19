@@ -59,37 +59,54 @@ class CustomSourceRepository {
     return file.readAsString();
   }
 
-  Future<CustomSourceInfo> importScript(String script, {String? fileName}) async {
+  Future<CustomSourceInfo> importScript(
+    String script, {
+    String? fileName,
+    String? importUrl,
+  }) async {
     if (sources.length >= 20) {
       throw const FormatException('最多只能同时存在 20 个自定义源');
     }
-    final normalized = script.replaceFirst('\uFEFF', '');
-    final header = RegExp(r'^/\*[\s\S]*?\*/').firstMatch(normalized)?.group(0) ?? '';
-    if (header.isEmpty) {
-      throw const FormatException('无效的自定义源文件：开头缺少 /* ... */ 信息块');
-    }
-    String read(String key) {
-      final match = RegExp('@$key\\s+(.+)').firstMatch(header);
-      return match?.group(1)?.trim() ?? '';
-    }
-
+    final parsed = _parseScript(script, fileName: fileName);
     final now = DateTime.now().millisecondsSinceEpoch;
-    final name = read('name').isNotEmpty
-        ? read('name')
-        : (fileName?.replaceAll(RegExp(r'\.js$'), '') ?? '自定义源 $now');
-    final cleanScript = normalized;
     final info = CustomSourceInfo(
       id: 'user_api_$now',
-      name: name,
-      description: read('description'),
-      version: read('version'),
-      author: read('author'),
-      homepage: read('homepage'),
+      name: parsed.name,
+      description: parsed.description,
+      version: parsed.version,
+      author: parsed.author,
+      homepage: parsed.homepage,
+      importUrl: _cleanUrl(importUrl),
       createdAt: now,
     );
-    final file = File(p.join(_dir.path, '${info.id}.js'));
-    await file.writeAsString(cleanScript, flush: true);
+    await _writeScript(info.id, parsed.script);
     sources.add(info);
+    await _saveIndex();
+    return info;
+  }
+
+  /// Re-download/refresh an existing source without creating a duplicate.
+  Future<CustomSourceInfo> updateScript(
+    String id,
+    String script, {
+    String? importUrl,
+  }) async {
+    final index = sources.indexWhere((source) => source.id == id);
+    if (index < 0) throw const FormatException('自定义源不存在');
+    final parsed = _parseScript(script);
+    final previous = sources[index];
+    final info = CustomSourceInfo(
+      id: previous.id,
+      name: parsed.name,
+      description: parsed.description,
+      version: parsed.version,
+      author: parsed.author,
+      homepage: parsed.homepage,
+      importUrl: _cleanUrl(importUrl) ?? previous.importUrl,
+      createdAt: previous.createdAt,
+    );
+    await _writeScript(info.id, parsed.script);
+    sources[index] = info;
     await _saveIndex();
     return info;
   }
@@ -100,4 +117,117 @@ class CustomSourceRepository {
     if (await file.exists()) await file.delete();
     await _saveIndex();
   }
+
+  /// Used by the full backup: metadata + script, so a restore works offline.
+  Future<List<Map<String, dynamic>>> exportEntries() async {
+    final entries = <Map<String, dynamic>>[];
+    for (final source in sources) {
+      final map = source.toJson();
+      map['script'] = await scriptFor(source.id) ?? '';
+      entries.add(map);
+    }
+    return entries;
+  }
+
+  Future<int> restoreEntries(List<dynamic> rawEntries) async {
+    var restored = 0;
+    for (final raw in rawEntries) {
+      if (raw is! Map) continue;
+      final map = Map<String, dynamic>.from(raw);
+      final id = '${map['id'] ?? ''}'.trim();
+      final script = '${map['script'] ?? ''}';
+      if (id.isEmpty || script.trim().isEmpty) continue;
+
+      try {
+        final parsed = _parseScript(script, fileName: '${map['name'] ?? 'source'}.js');
+        final importUrlRaw = map['importUrl'];
+        final importUrl = importUrlRaw is String && importUrlRaw.trim().isNotEmpty
+            ? importUrlRaw.trim()
+            : null;
+        final nameRaw = map['name'];
+        final restoredName = nameRaw is String && nameRaw.trim().isNotEmpty
+            ? nameRaw.trim()
+            : parsed.name;
+        final info = CustomSourceInfo(
+          id: id,
+          name: restoredName,
+          description: '${map['description'] ?? parsed.description}',
+          version: '${map['version'] ?? parsed.version}',
+          author: '${map['author'] ?? parsed.author}',
+          homepage: '${map['homepage'] ?? parsed.homepage}',
+          importUrl: importUrl,
+          createdAt: (map['createdAt'] as num?)?.toInt() ??
+              DateTime.now().millisecondsSinceEpoch,
+        );
+
+        await _writeScript(id, parsed.script);
+        final index = sources.indexWhere((source) => source.id == id);
+        if (index >= 0) {
+          sources[index] = info;
+        } else {
+          if (sources.length >= 20) continue;
+          sources.add(info);
+        }
+        restored++;
+      } catch (_) {
+        // Skip invalid scripts instead of failing the whole backup.
+      }
+    }
+    if (restored > 0) await _saveIndex();
+    return restored;
+  }
+
+  Future<void> _writeScript(String id, String script) async {
+    final file = File(p.join(_dir.path, '$id.js'));
+    await file.writeAsString(script, flush: true);
+  }
+
+  String? _cleanUrl(String? value) {
+    final url = value?.trim();
+    return url == null || url.isEmpty ? null : url;
+  }
+
+  _ParsedSource _parseScript(String script, {String? fileName}) {
+    final normalized = script.replaceFirst('\uFEFF', '');
+    final header = RegExp(r'^/\*[\s\S]*?\*/').firstMatch(normalized)?.group(0) ?? '';
+    if (header.isEmpty) {
+      throw const FormatException('无效的自定义源文件：开头缺少 /* ... */ 信息块');
+    }
+    String read(String key) {
+      final match = RegExp('@$key\\s+(.+)').firstMatch(header);
+      return match?.group(1)?.trim() ?? '';
+    }
+
+    final fallbackName = fileName?.replaceAll(RegExp(r'\.js$'), '').trim();
+    return _ParsedSource(
+      script: normalized,
+      name: read('name').isNotEmpty
+          ? read('name')
+          : (fallbackName?.isNotEmpty ?? false
+              ? fallbackName!
+              : '自定义源 ${DateTime.now().millisecondsSinceEpoch}'),
+      description: read('description'),
+      version: read('version'),
+      author: read('author'),
+      homepage: read('homepage'),
+    );
+  }
+}
+
+class _ParsedSource {
+  const _ParsedSource({
+    required this.script,
+    required this.name,
+    required this.description,
+    required this.version,
+    required this.author,
+    required this.homepage,
+  });
+
+  final String script;
+  final String name;
+  final String description;
+  final String version;
+  final String author;
+  final String homepage;
 }

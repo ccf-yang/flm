@@ -34,6 +34,13 @@ class AppState extends ChangeNotifier {
     await repository.save();
   }
 
+  /// Replace all settings at once (used by full-backup restore).
+  Future<void> applySettings(AppSettings newSettings) async {
+    repository.settings = newSettings;
+    notifyListeners();
+    await repository.save();
+  }
+
   void addSearchHistory(String keyword) {
     repository.addSearchHistory(keyword);
     notifyListeners();

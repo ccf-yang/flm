@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../../core/theme.dart';
 import '../../models/playlist.dart';
+import '../../services/backup_service.dart';
 import '../../state/library_state.dart';
 import '../screens/custom_sources_screen.dart';
 import '../screens/playlist_detail_screen.dart';
@@ -93,14 +94,14 @@ class LibraryTab extends StatelessWidget {
           ListTile(
             leading: const Icon(Icons.ios_share_rounded),
             title: const Text('导出备份'),
-            subtitle: const Text('生成 JSON 备份到 flm 的 Documents 目录'),
-            onTap: () => _exportBackup(context, library),
+            subtitle: const Text('列表 + 自定义源 + 设置，生成到 Documents'),
+            onTap: () => _exportBackup(context, context.read<BackupService>()),
           ),
           ListTile(
             leading: const Icon(Icons.restore_rounded),
             title: const Text('导入备份'),
-            subtitle: const Text('从文件 App 选择 flm JSON 备份'),
-            onTap: () => _importBackup(context, library),
+            subtitle: const Text('恢复列表、自定义源和设置'),
+            onTap: () => _importBackup(context, context.read<BackupService>()),
           ),
           ListTile(
             leading: const Icon(Icons.extension_rounded),
@@ -257,15 +258,16 @@ class LibraryTab extends StatelessWidget {
     }
   }
 
-  Future<void> _exportBackup(BuildContext context, LibraryState library) async {
+  Future<void> _exportBackup(BuildContext context, BackupService backup) async {
     try {
-      final path = await library.exportBackup();
+      final path = await backup.exportToFile();
       if (!context.mounted) return;
       await showDialog<void>(
         context: context,
         builder: (dialogContext) => AlertDialog(
           title: const Text('备份已生成'),
           content: SelectableText(path),
+
           actions: <Widget>[
             TextButton(
               onPressed: () {
@@ -289,12 +291,18 @@ class LibraryTab extends StatelessWidget {
     }
   }
 
-  Future<void> _importBackup(BuildContext context, LibraryState library) async {
+  Future<void> _importBackup(BuildContext context, BackupService backup) async {
     try {
-      final count = await library.importBackup();
+      final result = await backup.importFromFile();
       if (!context.mounted) return;
+      if (result.isEmpty) return;
+      final parts = <String>[
+        '${result.playlists} 个列表',
+        '${result.sources} 个自定义源',
+        if (result.settings) '设置',
+      ];
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(count == 0 ? '没有导入列表' : '已导入 $count 个列表')),
+        SnackBar(content: Text('已恢复 ${parts.join('、')}')),
       );
     } catch (error) {
       if (!context.mounted) return;

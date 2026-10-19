@@ -1,10 +1,4 @@
-import 'dart:convert';
-import 'dart:io';
-
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
-import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 
 import '../data/library_repository.dart';
 import '../models/playlist.dart';
@@ -147,33 +141,6 @@ class LibraryState extends ChangeNotifier {
     return songs.length;
   }
 
-  Future<String> exportBackup() async {
-    final documents = await getApplicationDocumentsDirectory();
-    final now = DateTime.now();
-    final stamp = '${now.year}${now.month.toString().padLeft(2, '0')}'
-        '${now.day.toString().padLeft(2, '0')}_'
-        '${now.hour.toString().padLeft(2, '0')}'
-        '${now.minute.toString().padLeft(2, '0')}';
-    final file = File(p.join(documents.path, 'flm_backup_$stamp.json'));
-    await file.writeAsString(repository.exportJson(), flush: true);
-    return file.path;
-  }
-
-  Future<int> importBackup() async {
-    final result = await FilePicker.platform.pickFiles(
-      type: FileType.any,
-      withData: true,
-    );
-    if (result == null || result.files.isEmpty) return 0;
-    final file = result.files.first;
-    final text = file.bytes != null
-        ? utf8.decode(file.bytes!)
-        : file.path != null
-            ? await File(file.path!).readAsString()
-            : null;
-    if (text == null) throw const FormatException('无法读取备份文件');
-    final imported = await repository.importJson(text);
-    notifyListeners();
-    return imported.length;
-  }
+  /// Used by BackupService after restoring playlists directly in the repo.
+  void notifyChanged() => notifyListeners();
 }

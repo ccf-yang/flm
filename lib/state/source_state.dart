@@ -111,13 +111,7 @@ class SourceState extends ChangeNotifier {
   }
 
   Future<CustomSourceInfo?> importSourceFromUrl(String rawUrl) async {
-    final url = rawUrl.trim();
-    final uri = Uri.tryParse(url);
-    if (uri == null ||
-        !(uri.scheme == 'http' || uri.scheme == 'https') ||
-        uri.host.isEmpty) {
-      throw const FormatException('请输入有效的 http / https 链接');
-    }
+    final uri = _parseUrl(rawUrl);
     if (sources.length >= 20) {
       throw const FormatException('最多只能同时存在 20 个自定义源');
     }
@@ -125,40 +119,14 @@ class SourceState extends ChangeNotifier {
     importing = true;
     notifyListeners();
     try {
-      final dio = Dio(
-        BaseOptions(
-          connectTimeout: const Duration(seconds: 15),
-          receiveTimeout: const Duration(seconds: 25),
-          sendTimeout: const Duration(seconds: 15),
-          validateStatus: (status) =>
-              status != null && status >= 200 && status < 300,
-          followRedirects: true,
-          maxRedirects: 5,
-          headers: const <String, String>{
-            'User-Agent':
-                'Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 '
-                '(KHTML, like Gecko) Chrome/120.0 Safari/537.36',
-            'Accept': 'application/javascript, text/javascript, text/plain, */*',
-          },
-        ),
-      );
-      final response = await dio.get<String>(
-        uri.toString(),
-        options: Options(responseType: ResponseType.plain),
-      );
-      final script = response.data;
-      if (script == null || script.trim().isEmpty) {
-        throw const FormatException('下载内容为空');
-      }
-      if (script.length > 1024 * 1024) {
-        throw const FormatException('脚本超过 1 MiB，已拒绝导入');
-      }
+      final script = await _downloadScript(uri);
       final fileName = uri.pathSegments.isNotEmpty
           ? uri.pathSegments.last
           : 'remote_source.js';
       final info = await repository.importScript(
         script,
         fileName: fileName.isEmpty ? 'remote_source.js' : fileName,
+        importUrl: uri.toString(),
       );
       notifyListeners();
       return info;
@@ -166,6 +134,75 @@ class SourceState extends ChangeNotifier {
       importing = false;
       notifyListeners();
     }
+  }
+
+  /// Re-download an imported source from its saved URL, keeping the same id.
+  Future<CustomSourceInfo> updateSourceFromUrl(CustomSourceInfo source) async {
+    final rawUrl = source.importUrl;
+    if (rawUrl == null || rawUrl.trim().isEmpty) {
+      throw const FormatException('该自定义源没有保存在线 URL');
+    }
+    final uri = _parseUrl(rawUrl);
+    importing = true;
+    notifyListeners();
+    try {
+      final script = await _downloadScript(uri);
+      final updated = await repository.updateScript(
+        source.id,
+        script,
+        importUrl: uri.toString(),
+      );
+      notifyListeners();
+      if (active?.id == updated.id) {
+        await reload();
+      }
+      return updated;
+    } finally {
+      importing = false;
+      notifyListeners();
+    }
+  }
+
+  Uri _parseUrl(String rawUrl) {
+    final uri = Uri.tryParse(rawUrl.trim());
+    if (uri == null ||
+        !(uri.scheme == 'http' || uri.scheme == 'https') ||
+        uri.host.isEmpty) {
+      throw const FormatException('请输入有效的 http / https 链接');
+    }
+    return uri;
+  }
+
+  Future<String> _downloadScript(Uri uri) async {
+    final dio = Dio(
+      BaseOptions(
+        connectTimeout: const Duration(seconds: 15),
+        receiveTimeout: const Duration(seconds: 25),
+        sendTimeout: const Duration(seconds: 15),
+        validateStatus: (status) =>
+            status != null && status >= 200 && status < 300,
+        followRedirects: true,
+        maxRedirects: 5,
+        headers: const <String, String>{
+          'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 '
+              '(KHTML, like Gecko) Chrome/120.0 Safari/537.36',
+          'Accept': 'application/javascript, text/javascript, text/plain, */*',
+        },
+      ),
+    );
+    final response = await dio.get<String>(
+      uri.toString(),
+      options: Options(responseType: ResponseType.plain),
+    );
+    final script = response.data;
+    if (script == null || script.trim().isEmpty) {
+      throw const FormatException('下载内容为空');
+    }
+    if (script.length > 1024 * 1024) {
+      throw const FormatException('脚本超过 1 MiB，已拒绝导入');
+    }
+    return script;
   }
 
   Future<void> deleteSource(String id) async {

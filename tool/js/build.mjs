@@ -98,6 +98,26 @@ const kwCompatPlugin = {
           break
         }
       }
+      // The kw leaderboard uses AES/ECB/NoPadding.  Its JSON payload is not
+      // always 16-byte aligned, so pad it (and trim on decrypt) instead of
+      // letting CryptoJS emit a non-block-aligned ciphertext.
+      for (let i = 0; i < lines.length; i++) {
+        if (
+          lines[i].includes('const data = Buffer.from(JSON.stringify(jsonData)).toString') &&
+          lines[i].includes('base64')
+        ) {
+          lines[i] =
+            `    let rawData = Buffer.from(JSON.stringify(jsonData))\n` +
+            `    const padLength = (16 - (rawData.length % 16)) % 16\n` +
+            `    if (padLength) rawData = Buffer.concat([rawData, Buffer.alloc(padLength)])\n` +
+            `    const data = rawData.toString('base64')`
+        }
+        if (lines[i].includes('return JSON.parse(aesDecryptSync(data, this.aesKey')) {
+          lines[i] =
+            `    const decrypted = aesDecryptSync(data, this.aesKey, this.aesIv, AES_MODE.ECB_128_NoPadding)\n` +
+            `    return JSON.parse(decrypted.replace(/[\\u0000\\s]+$/, ''))`
+        }
+      }
       return { contents: lines.join('\n'), loader: 'js' }
     })
   },

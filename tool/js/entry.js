@@ -1,12 +1,23 @@
 import './prelude.js'
 import musicSdk from '@/utils/musicSdk'
-import { toOldMusicInfo } from '@/utils'
+import { toNewMusicInfo, toOldMusicInfo } from '@/utils'
 
 const SOURCES = ['kw', 'kg', 'tx', 'wy', 'mg']
 
 const unwrap = async (value) => {
   if (value && typeof value.promise?.then === 'function') return await value.promise
   return await value
+}
+
+// The SDK returns the legacy LX music-info shape.  The original app converts
+// it in store/search/music, store/songlist and store/leaderboard before the UI
+// sees it; we must do the same or every song loses its id/meta.
+const normalizeSongs = (result) => {
+  if (!result || !Array.isArray(result.list)) return result
+  return {
+    ...result,
+    list: result.list.map((item) => toNewMusicInfo(item)),
+  }
 }
 
 const moduleOf = (source, name) => {
@@ -24,7 +35,7 @@ const searchMusic = async ({ source = 'kw', keyword = '', page = 1, limit } = {}
       const mod = musicSdk[id]?.musicSearch
       if (!mod) return null
       try {
-        return await mod.search(keyword, page, limit ?? mod.limit ?? 30)
+        return normalizeSongs(await mod.search(keyword, page, limit ?? mod.limit ?? 30))
       } catch (_) {
         return null
       }
@@ -39,7 +50,9 @@ const searchMusic = async ({ source = 'kw', keyword = '', page = 1, limit } = {}
       source: 'all',
     }
   }
-  return await moduleOf(source, 'musicSearch').search(keyword, page, limit ?? 30)
+  return normalizeSongs(
+    await moduleOf(source, 'musicSearch').search(keyword, page, limit ?? 30),
+  )
 }
 
 const searchSonglist = async ({ source = 'kw', keyword = '', page = 1, limit } = {}) => {
@@ -88,7 +101,7 @@ const songlistList = async ({ source = 'kw', sortId = '', tagId = '', page = 1 }
 const songlistDetail = async ({ source = 'kw', id, page = 1 } = {}) => {
   if (!id) throw new Error('songlist id is required')
   const mod = moduleOf(source, 'songList')
-  return await mod.getListDetail(id, page)
+  return normalizeSongs(await mod.getListDetail(id, page))
 }
 
 const leaderboards = async ({ source = 'kw' } = {}) => {
@@ -99,7 +112,12 @@ const leaderboards = async ({ source = 'kw' } = {}) => {
 const leaderboardDetail = async ({ source = 'kw', id, page = 1 } = {}) => {
   if (!id) throw new Error('leaderboard id is required')
   const mod = moduleOf(source, 'leaderboard')
-  return await mod.getList(id, page)
+  // Board ids from the UI are `kw__93`, `kg__8888`, ... while the SDK's
+  // getList() expects only the source-specific bang id.  This split used to
+  // live in core/leaderboard.ts.
+  const rawId = String(id)
+  const bangId = rawId.includes('__') ? rawId.split('__').slice(1).join('__') : rawId
+  return normalizeSongs(await mod.getList(bangId, page))
 }
 
 const hotSearch = async ({ source = 'kw' } = {}) => {

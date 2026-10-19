@@ -157,7 +157,10 @@ class LibraryRepository {
     if (decoded is! Map || decoded['type'] != 'flm_library') {
       throw const FormatException('不是有效的 flm 备份文件');
     }
-    final raw = decoded['playlists'];
+    return importPlaylists(decoded['playlists']);
+  }
+
+  Future<List<Playlist>> importPlaylists(dynamic raw) async {
     if (raw is! List) throw const FormatException('备份文件缺少列表数据');
 
     final incoming = raw

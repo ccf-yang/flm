@@ -9,6 +9,7 @@ import 'app.dart';
 import 'data/custom_source_repository.dart';
 import 'data/library_repository.dart';
 import 'data/settings_repository.dart';
+import 'services/backup_service.dart';
 import 'services/http_bridge.dart';
 import 'services/local_music_service.dart';
 import 'services/online_engine.dart';
@@ -67,6 +68,15 @@ Future<void> main() async {
   );
   final searchState = SearchState(engine: onlineEngine, appState: appState);
   final discoverState = DiscoverState(engine: onlineEngine, appState: appState);
+  final backupService = BackupService(
+    libraryRepository: libraryRepository,
+    libraryState: libraryState,
+    sourceRepository: customSourceRepository,
+    sourceState: sourceState,
+    settingsRepository: settingsRepository,
+    appState: appState,
+    playerService: playerService,
+  );
 
   await playerService.setVolume(appState.settings.volume);
   await playerService.setSpeed(appState.settings.speed);
@@ -87,6 +97,7 @@ Future<void> main() async {
         Provider<OnlineEngine>.value(value: onlineEngine),
         Provider<SourceEngine>.value(value: sourceEngine),
         Provider<FlmPlayerService>.value(value: playerService),
+        Provider<BackupService>.value(value: backupService),
       ],
       child: const FlmApp(),
     ),
