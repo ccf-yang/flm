@@ -8,6 +8,7 @@ class CustomSourceInfo {
     this.homepage = '',
     this.importUrl,
     this.createdAt = 0,
+    this.disabled = false,
   });
 
   final String id;
@@ -18,6 +19,11 @@ class CustomSourceInfo {
   final String homepage;
   final String? importUrl;
   final int createdAt;
+
+  /// A probed-as-dead source can be switched off without deleting it: it stays
+  /// importable/refreshable but is left out of playback and the cross-source
+  /// pool, so a broken script no longer slows every song down.
+  final bool disabled;
 
   factory CustomSourceInfo.fromJson(Map<String, dynamic> json) {
     final importUrlRaw = json['importUrl'];
@@ -33,6 +39,7 @@ class CustomSourceInfo {
       homepage: '${json['homepage'] ?? ''}',
       importUrl: importUrl,
       createdAt: (json['createdAt'] as num?)?.toInt() ?? 0,
+      disabled: json['disabled'] == true,
     );
   }
 
@@ -45,6 +52,7 @@ class CustomSourceInfo {
         'homepage': homepage,
         if (importUrl != null && importUrl!.isNotEmpty) 'importUrl': importUrl,
         'createdAt': createdAt,
+        if (disabled) 'disabled': true,
       };
 
   CustomSourceInfo copyWith({
@@ -54,6 +62,7 @@ class CustomSourceInfo {
     String? author,
     String? homepage,
     String? importUrl,
+    bool? disabled,
   }) {
     return CustomSourceInfo(
       id: id,
@@ -64,6 +73,7 @@ class CustomSourceInfo {
       homepage: homepage ?? this.homepage,
       importUrl: importUrl ?? this.importUrl,
       createdAt: createdAt,
+      disabled: disabled ?? this.disabled,
     );
   }
 }

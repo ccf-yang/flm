@@ -15,7 +15,6 @@ import '../services/lyric_parser.dart';
 import '../services/debug_log.dart';
 import '../services/online_engine.dart';
 import '../services/player_service.dart';
-import '../services/url_probe.dart';
 import 'app_state.dart';
 import 'library_state.dart';
 import 'source_state.dart';
@@ -270,25 +269,6 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
         // A newer play request may have been issued while the URL was being
         // resolved. Starting this stale track now would silently play the
         // wrong song, so drop it.
-        if (token != _playToken || _disposed) return;
-        final probe = await probeAudioUrl(url);
-        debugLog?.record('播放前探测 ${song.name}', <String, Object?>{
-          '地址': url,
-          '状态': probe.networkFailed ? '请求失败' : probe.status,
-          '类型': probe.contentType.isEmpty ? '未知' : probe.contentType,
-          '长度': probe.length < 0 ? '未知' : probe.length,
-          '耗时': '${probe.elapsedMs}ms',
-          '错误': probe.error,
-        });
-        // A probe that fails on DNS/TLS must not veto playback: the player may
-        // still reach the stream. Only a definite rejection or an HTML body is
-        // treated as a dead link so the pool can move to the next source.
-        if (probe.rejected) {
-          throw StateError('播放地址被拒绝（HTTP ${probe.status}）');
-        }
-        if (probe.notAudio) {
-          throw StateError('播放地址返回的是网页而不是音频（${probe.contentType}）');
-        }
         if (token != _playToken || _disposed) return;
         await service.playUrl(url, initialPosition: initialPosition);
       }

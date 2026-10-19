@@ -14,6 +14,7 @@ import '../models/song.dart';
 import '../services/debug_log.dart';
 import '../services/http_bridge.dart';
 import '../services/source_engine.dart';
+import '../services/url_probe.dart';
 import 'app_state.dart';
 
 /// One long-lived WebView sandbox per custom source. Initializing a source runs
@@ -66,10 +67,17 @@ class SourceState extends ChangeNotifier {
 
   List<CustomSourceInfo> get sources => repository.sources;
 
+  /// Sources that take part in playback: disabled scripts are kept imported and
+  /// refreshable but never asked for a link.
+  List<CustomSourceInfo> get enabledSources => repository.sources
+      .where((source) => !source.disabled)
+      .toList(growable: false);
+
   CustomSourceInfo? get active {
     final id = appState.settings.activeSourceId;
     if (id == null) return null;
-    return repository.byId(id);
+    final source = repository.byId(id);
+    return source == null || source.disabled ? null : source;
   }
 
   SourceCapabilities get capabilities {
@@ -107,6 +115,17 @@ class SourceState extends ChangeNotifier {
     if (source != null) {
       unawaited(_initialize(source));
     }
+  }
+
+  /// Switch a source out of playback without deleting it. The stored selection
+  /// is kept, so re-enabling the active source makes it take over again at once.
+  Future<void> setDisabled(CustomSourceInfo source, bool disabled) async {
+    await repository.setDisabled(source.id, disabled);
+    debugLog?.record(disabled ? '源已禁用 ${source.name}' : '源已启用 ${source.name}', <String, Object?>{
+      'id': source.id,
+      '在线 URL': source.importUrl ?? '本地导入',
+    });
+    notifyListeners();
   }
 
   Future<void> _initialize(CustomSourceInfo source) {
@@ -317,7 +336,7 @@ class SourceState extends ChangeNotifier {
   /// skipped. Each refreshed script drops its cached sandbox, so the engine
   /// pool runs the new code the next time that source is used.
   Future<SourceRefreshResult> updateAllFromUrls() async {
-    final targets = sources
+    final targets = enabledSources
         .where((source) => (source.importUrl ?? '').trim().isNotEmpty)
         .toList();
     final skipped = sources.length - targets.length;
@@ -368,6 +387,55 @@ class SourceState extends ChangeNotifier {
       failed: failed,
       skipped: skipped,
     );
+  }
+
+  /// Check one script against a real song with the same path playback uses,
+  /// including the link check, so a dead source can be switched off instead of
+  /// slowing every song down.
+  Future<SourceProbeReport> probeSource(CustomSourceInfo source, {Song? song}) async {
+    final started = DateTime.now();
+    SourceProbeReport finish(bool ok, String headline, String detail) {
+      debugLog?.record('探测${ok ? '通过' : '失败'} ${source.name}', <String, Object?>{
+        '结论': headline,
+        '详情': detail,
+        '耗时': '${DateTime.now().difference(started).inMilliseconds}ms',
+      });
+      return SourceProbeReport(ok: ok, headline: headline, detail: detail);
+    }
+
+    final target = song;
+    if (target == null || target.isLocal || target.source.isEmpty) {
+      return finish(false, '缺少在线歌曲',
+          '探测要拿真实歌曲信息去请求链接，请先播放一首在线歌曲再点探测。');
+    }
+
+    final current = _slots[source.id];
+    if (current == null || !current.ready) await _initialize(source);
+    final slot = _slots[source.id];
+    if (slot == null || !slot.ready || slot.capabilities.isEmpty) {
+      return finish(false, '脚本加载失败',
+          '这个源初始化没成功，可能已失效或不是有效的 userApi 脚本。');
+    }
+
+    final platforms = slot.capabilities.sources.keys
+        .where((name) => slot.capabilities.supports(name, 'musicUrl'))
+        .toList();
+    if (!slot.capabilities.supports(target.source, 'musicUrl')) {
+      return finish(
+        false,
+        '不支持 ${target.source.toUpperCase()}',
+        '可取链平台：${platforms.isEmpty ? '无' : platforms.join('、')}'
+            '（测试曲为 ${target.source.toUpperCase()} ${target.name}）',
+      );
+    }
+
+    try {
+      final resolved = await _resolveVia(source, target);
+      _supported.putIfAbsent(source.id, () => <String>{}).add(target.source);
+      return finish(true, '${target.source.toUpperCase()} 可播', '${resolved['url'] ?? ''}');
+    } catch (error) {
+      return finish(false, '${target.source.toUpperCase()} 不可用', '$error');
+    }
   }
 
   Future<void> deleteSource(String id) async {
@@ -448,10 +516,25 @@ class SourceState extends ChangeNotifier {
         if (data is! Map) throw StateError('自定义源返回格式错误');
         final url = '${data['url'] ?? ''}';
         if (url.isEmpty) throw StateError('自定义源没有返回播放链接');
+        // A script can resolve "successfully" and still hand back a link whose
+        // host now answers 404 with an HTML page. Verifying it here lets the
+        // cross-source pool move on instead of failing later inside the player.
+        final probe = await probeAudioUrl(url);
         debugLog?.record('解析成功 $attemptId → ${source.name}', <String, Object?>{
           '音质': currentQuality,
           '地址': url,
+          '探测': probe.networkFailed
+              ? '请求失败（仍尝试播放）'
+              : 'HTTP ${probe.status} ${probe.contentType.isEmpty ? '未知类型' : probe.contentType}',
+          '长度': probe.length < 0 ? '未知' : probe.length,
+          '耗时': '${probe.elapsedMs}ms',
         });
+        if (probe.rejected) {
+          throw StateError('返回的链接已失效（HTTP ${probe.status}）');
+        }
+        if (probe.notAudio) {
+          throw StateError('返回的不是音频（${probe.contentType}）');
+        }
         return <String, dynamic>{
           'url': url,
           'type': '${data['type'] ?? currentQuality}',
@@ -481,19 +564,28 @@ class SourceState extends ChangeNotifier {
       return <String, dynamic>{'url': song.localPath, 'type': 'local'};
     }
 
+    final enabled = enabledSources;
     final selected = active;
     if (selected == null) {
-      throw StateError('尚未启用自定义源。请先到「设置 → 自定义源」导入并启用音源脚本。');
+      throw StateError(
+        enabled.isEmpty
+            ? (sources.isEmpty
+                ? '尚未导入自定义源。请先到「设置 → 自定义源」导入音源脚本。'
+                : '所有自定义源都被禁用了。请到「自定义源」探测后启用可用的源。')
+            : '尚未启用自定义源。请先到「设置 → 自定义源」导入并启用音源脚本。',
+      );
     }
 
     _lastPoolError = null;
     debugLog?.record('取链开始 ${song.name} - ${song.singer}', <String, Object?>{
       '平台': song.source,
       '首选源': selected.name,
+      '可用源': enabled.length,
+      '已禁用': sources.length - enabled.length,
     });
 
     final candidates = <CustomSourceInfo>[selected];
-    final others = sources.where((source) => source.id != selected.id).toList()
+    final others = enabled.where((source) => source.id != selected.id).toList()
       ..sort((a, b) {
         final aSupports = _supported[a.id]?.contains(song.source) ?? false;
         final bSupports = _supported[b.id]?.contains(song.source) ?? false;
@@ -551,4 +643,18 @@ class SourceRefreshResult {
   final int updated;
   final List<String> failed;
   final int skipped;
+}
+
+/// Verdict of a single-source probe, shown on the source page and mirrored into
+/// the debug log.
+class SourceProbeReport {
+  const SourceProbeReport({
+    required this.ok,
+    required this.headline,
+    required this.detail,
+  });
+
+  final bool ok;
+  final String headline;
+  final String detail;
 }

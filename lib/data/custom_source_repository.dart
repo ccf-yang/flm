@@ -104,11 +104,20 @@ class CustomSourceRepository {
       homepage: parsed.homepage,
       importUrl: _cleanUrl(importUrl) ?? previous.importUrl,
       createdAt: previous.createdAt,
+      disabled: previous.disabled,
     );
     await _writeScript(info.id, parsed.script);
     sources[index] = info;
     await _saveIndex();
     return info;
+  }
+
+  /// Persist the disabled switch of one source.
+  Future<void> setDisabled(String id, bool disabled) async {
+    final index = sources.indexWhere((source) => source.id == id);
+    if (index < 0) return;
+    sources[index] = sources[index].copyWith(disabled: disabled);
+    await _saveIndex();
   }
 
   Future<void> delete(String id) async {
@@ -158,6 +167,7 @@ class CustomSourceRepository {
           importUrl: importUrl,
           createdAt: (map['createdAt'] as num?)?.toInt() ??
               DateTime.now().millisecondsSinceEpoch,
+          disabled: map['disabled'] == true,
         );
 
         await _writeScript(id, parsed.script);

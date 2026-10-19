@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../../core/theme.dart';
 import '../../models/custom_source.dart';
+import '../../state/player_state.dart';
 import '../../state/source_state.dart';
 import '../kit.dart';
 import '../widgets/empty_state.dart';
@@ -57,7 +58,12 @@ class CustomSourcesScreen extends StatelessWidget {
                           child: LinearProgressIndicator(minHeight: 2),
                         ),
                       _StatusCard(state: state),
-                      SectionHead(title: '已导入的源', note: '${state.sources.length} 个'),
+                      SectionHead(
+                        title: '已导入的源',
+                        note: state.sources.length == state.enabledSources.length
+                            ? '${state.sources.length} 个'
+                            : '${state.sources.length} 个（禁用 ${state.sources.length - state.enabledSources.length}）',
+                      ),
                       if (state.sources.isEmpty)
                         const Padding(
                           padding: EdgeInsets.symmetric(vertical: 18),
@@ -81,6 +87,8 @@ class CustomSourcesScreen extends StatelessWidget {
                                   onUpdate: source.importUrl == null
                                       ? null
                                       : () => _updateFromUrl(context, state, source),
+                                  onProbe: () => _probe(context, state, source),
+                                  onToggleDisabled: () => _toggleDisabled(context, state, source),
                                   onDelete: () => _delete(context, state, source),
                                 );
                               }),
@@ -199,9 +207,51 @@ class CustomSourcesScreen extends StatelessWidget {
     SourceState state,
     CustomSourceInfo source,
   ) async {
+    if (source.disabled) {
+      flmToast(context, '「${source.name}」已禁用，先点电源按钮启用');
+      return;
+    }
     await state.setActive(source);
     if (!context.mounted) return;
     flmToast(context, '已选择「${source.name}」');
+  }
+
+  Future<void> _toggleDisabled(
+    BuildContext context,
+    SourceState state,
+    CustomSourceInfo source,
+  ) async {
+    await state.setDisabled(source, !source.disabled);
+    if (!context.mounted) return;
+    flmToast(
+      context,
+      source.disabled
+          ? '已启用「${source.name}」'
+          : '已禁用「${source.name}」，取链时不再等它',
+    );
+  }
+
+  /// Resolve the song that is currently playing through this one source only,
+  /// then report whether the link it returns actually serves audio.
+  Future<void> _probe(
+    BuildContext context,
+    SourceState state,
+    CustomSourceInfo source,
+  ) async {
+    final song = context.read<PlayerController>().current;
+    flmToast(context, '正在探测「${source.name}」…');
+    final report = await state.probeSource(source, song: song);
+    if (!context.mounted) return;
+    final act = await flmConfirmDialog(
+      context,
+      title: '${report.ok ? '探测通过' : '探测失败'}｜${source.name}',
+      message: '${report.headline}\n${report.detail}',
+      cancelLabel: '知道了',
+      confirmLabel: report.ok ? '启用这个源' : '禁用这个源',
+      danger: !report.ok,
+    );
+    if (!act) return;
+    await state.setDisabled(source, !report.ok);
   }
 
   Future<void> _updateFromUrl(
@@ -271,6 +321,8 @@ class _SourceRow extends StatelessWidget {
     required this.active,
     required this.onTap,
     required this.onDelete,
+    required this.onProbe,
+    required this.onToggleDisabled,
     this.onUpdate,
   });
 
@@ -278,11 +330,14 @@ class _SourceRow extends StatelessWidget {
   final bool active;
   final VoidCallback onTap;
   final VoidCallback onDelete;
+  final VoidCallback onProbe;
+  final VoidCallback onToggleDisabled;
   final VoidCallback? onUpdate;
 
   @override
   Widget build(BuildContext context) {
     final parts = <String>[
+      if (source.disabled) '已禁用',
       if (source.version.isNotEmpty) 'v${source.version}',
       if (source.author.isNotEmpty) source.author,
       if (source.createdAt > 0) _date(source.createdAt),
@@ -328,7 +383,9 @@ class _SourceRow extends StatelessWidget {
                       style: TextStyle(
                         fontSize: 14,
                         fontWeight: FontWeight.w700,
-                        color: active ? accentFor(context) : textFor(context),
+                        color: active
+                            ? accentFor(context)
+                            : (source.disabled ? mutedFor(context) : textFor(context)),
                       ),
                     ),
                     if (parts.isNotEmpty) ...<Widget>[
@@ -345,19 +402,32 @@ class _SourceRow extends StatelessWidget {
               ),
               if (active)
                 Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 6),
-                  child: Icon(CupertinoIcons.checkmark_circle_fill, size: 18, color: accentFor(context)),
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  child: Icon(CupertinoIcons.checkmark_circle_fill,
+                      size: 17, color: accentFor(context)),
                 ),
+              _RowIcon(
+                icon: CupertinoIcons.dot_radiowaves_left_right,
+                color: mutedFor(context),
+                onTap: onProbe,
+              ),
+              _RowIcon(
+                icon: source.disabled
+                    ? CupertinoIcons.play_circle
+                    : CupertinoIcons.power,
+                color: source.disabled ? goldFor(context) : mutedFor(context),
+                onTap: onToggleDisabled,
+              ),
               if (onUpdate != null)
-                IconButton(
-                  onPressed: onUpdate,
-                  visualDensity: VisualDensity.compact,
-                  icon: Icon(CupertinoIcons.arrow_clockwise, size: 18, color: mutedFor(context)),
+                _RowIcon(
+                  icon: CupertinoIcons.arrow_clockwise,
+                  color: mutedFor(context),
+                  onTap: onUpdate,
                 ),
-              IconButton(
-                onPressed: onDelete,
-                visualDensity: VisualDensity.compact,
-                icon: Icon(CupertinoIcons.trash, size: 18, color: mutedFor(context)),
+              _RowIcon(
+                icon: CupertinoIcons.trash,
+                color: mutedFor(context),
+                onTap: onDelete,
               ),
             ],
           ),
@@ -369,6 +439,25 @@ class _SourceRow extends StatelessWidget {
   String _date(int timestamp) {
     final date = DateTime.fromMillisecondsSinceEpoch(timestamp);
     return '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
+  }
+}
+
+/// Compact trailing action button for a source row.
+class _RowIcon extends StatelessWidget {
+  const _RowIcon({required this.icon, required this.color, required this.onTap});
+
+  final IconData icon;
+  final Color color;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      onPressed: onTap,
+      padding: EdgeInsets.zero,
+      constraints: const BoxConstraints.tightFor(width: 32, height: 32),
+      icon: Icon(icon, size: 17, color: color),
+    );
   }
 }
 
