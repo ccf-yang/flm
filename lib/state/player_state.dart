@@ -54,6 +54,7 @@ class PlayerController extends ChangeNotifier {
     service.onSkipNext = () => next();
     service.onSkipPrevious = () => previous();
     service.onCompleted = _handleCompleted;
+    sourceState.addListener(_onSourceChanged);
     _progressTimer = Timer.periodic(const Duration(seconds: 5), (_) => _saveProgress());
     _restoreLastPlayback();
   }
@@ -216,20 +217,21 @@ class PlayerController extends ChangeNotifier {
 
   Future<String> _resolveUrl(Song song) async {
     final key = _songKey(song);
-    final cacheSourceId = sourceState.active?.id ?? '';
+    final activeSourceId = sourceState.active?.id ?? '';
     final cached = _urlCache[key];
     if (cached != null &&
-        cached.sourceId == cacheSourceId &&
+        cached.sourceId == activeSourceId &&
         cached.expiresAt.isAfter(DateTime.now())) {
       return cached.url;
     }
-    final resolved = await sourceState.resolveMusicUrl(song);
+    final resolved = await sourceState.resolveMusicUrlAutoSwitch(song);
     final url = '${resolved['url'] ?? ''}';
     if (url.isEmpty) throw StateError('没有获取到播放链接');
+    final servingSourceId = sourceState.active?.id ?? '';
     if (_urlCache.length > 30) _urlCache.clear();
     _urlCache[key] = _CachedUrl(
       url: url,
-      sourceId: cacheSourceId,
+      sourceId: servingSourceId,
       expiresAt: DateTime.now().add(const Duration(minutes: 10)),
     );
     return url;
@@ -456,6 +458,20 @@ class PlayerController extends ChangeNotifier {
     await next(auto: true);
   }
 
+  /// Once a custom source becomes ready, silently retry a song that failed only
+  /// because no usable source existed yet (for example the user just imported
+  /// one). Gated on [_errorText] so it never steals playback from the restored
+  /// "tap to continue" state or from a foreground resume.
+  void _onSourceChanged() {
+    if (_disposed) return;
+    if (_loading || _isPlaying) return;
+    if (_errorText == null) return;
+    final song = _current;
+    if (song == null || song.isLocal) return;
+    if (!sourceState.hasActiveSource) return;
+    unawaited(_loadAndPlay(song, initialPosition: _position));
+  }
+
   Future<void> reloadLyrics() async {
     final song = _current;
     if (song != null) await _loadLyrics(song);
@@ -575,6 +591,7 @@ class PlayerController extends ChangeNotifier {
     _sleepTimer?.cancel();
     _settingsSaveTimer?.cancel();
     _progressTimer.cancel();
+    sourceState.removeListener(_onSourceChanged);
     for (final subscription in _subscriptions) {
       unawaited(subscription.cancel());
     }

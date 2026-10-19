@@ -27,6 +27,11 @@ class SourceState extends ChangeNotifier {
   String? error;
   SourceCapabilities capabilities = SourceCapabilities.empty();
 
+  /// Cache of which music platforms each custom source can resolve, keyed by
+  /// source id. Used to prefer a source that likely supports a song during the
+  /// transparent cross-source fallback in [resolveMusicUrlAutoSwitch].
+  final Map<String, Set<String>> _supported = <String, Set<String>>{};
+
   List<CustomSourceInfo> get sources => repository.sources;
 
   CustomSourceInfo? get active {
@@ -68,8 +73,14 @@ class SourceState extends ChangeNotifier {
     notifyListeners();
     try {
       capabilities = await engine.activate(source, script);
+      final names = <String>{};
+      for (final name in capabilities.sources.keys) {
+        if (capabilities.supports(name, 'musicUrl')) names.add(name);
+      }
+      _supported[source.id] = names;
     } catch (e) {
       capabilities = SourceCapabilities.empty();
+      _supported.remove(source.id);
       error = '$e';
     } finally {
       loading = false;
@@ -207,6 +218,7 @@ class SourceState extends ChangeNotifier {
 
   Future<void> deleteSource(String id) async {
     await repository.delete(id);
+    _supported.remove(id);
     if (appState.settings.activeSourceId == id) {
       await setActive(null);
     } else {
@@ -274,6 +286,63 @@ class SourceState extends ChangeNotifier {
       }
     }
     throw lastError ?? StateError('自定义源没有返回播放链接');
+  }
+
+  /// Resolve a playable URL, transparently falling back across the configured
+  /// custom sources. Starts from the currently active source, then tries the
+  /// others (preferring any previously known to support this song's platform).
+  /// The first source that returns a URL stays active, so subsequent songs keep
+  /// using it without the user noticing a "source switch". If nothing works the
+  /// original active source is restored before throwing.
+  Future<Map<String, dynamic>> resolveMusicUrlAutoSwitch(
+    Song song, {
+    String? quality,
+  }) async {
+    if (song.isLocal) {
+      return <String, dynamic>{'url': song.localPath, 'type': 'local'};
+    }
+
+    final original = active;
+    final candidates = <CustomSourceInfo>[];
+    if (original != null) candidates.add(original);
+    final others = sources
+        .where((source) => source.id != original?.id)
+        .toList()
+      ..sort((a, b) {
+        final aSupports = _supported[a.id]?.contains(song.source) ?? false;
+        final bSupports = _supported[b.id]?.contains(song.source) ?? false;
+        if (aSupports != bSupports) return aSupports ? -1 : 1;
+        return 0;
+      });
+    candidates.addAll(others);
+
+    if (candidates.isEmpty) {
+      // No source configured — let resolveMusicUrl raise its own guidance.
+      return resolveMusicUrl(song, quality: quality);
+    }
+
+    Object? lastError;
+    for (final candidate in candidates) {
+      if (candidate.id != active?.id) {
+        await setActive(candidate);
+      }
+      if (!capabilities.supports(song.source, 'musicUrl')) {
+        lastError ??= StateError(
+          '没有可用的自定义源支持 ${song.source.toUpperCase()} 的音源',
+        );
+        continue;
+      }
+      try {
+        return await resolveMusicUrl(song, quality: quality);
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    if (original != null && active?.id != original.id) {
+      await setActive(original);
+    }
+    throw lastError ?? StateError('没有可用的自定义源返回播放链接');
   }
 
   @override

@@ -1,16 +1,23 @@
-import 'package:flutter/cupertino.dart';
+import 'dart:math' as math;
+import 'dart:ui' show ImageFilter;
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../../core/formatters.dart';
 import '../../core/theme.dart';
 import '../../state/player_state.dart';
-import '../screens/player_screen.dart';
 import '../kit.dart';
+import '../screens/player_screen.dart';
 import 'cover_art.dart';
 
+/// Floating "now playing" pendant that sits just above the tab bar. A small
+/// semi-transparent glass disc with a progress ring around the current cover,
+/// so it blends into the aurora instead of blocking the view like a bar did.
+/// Tapping it opens the full player page.
 class MiniPlayer extends StatelessWidget {
   const MiniPlayer({super.key});
+
+  static const double diameter = 58;
 
   @override
   Widget build(BuildContext context) {
@@ -22,152 +29,74 @@ class MiniPlayer extends StatelessWidget {
     final progress = durationMs > 0
         ? (player.position.inMilliseconds / durationMs).clamp(0.0, 1.0).toDouble()
         : 0.0;
-    final lyric = player.activeLine >= 0 && player.activeLine < player.lyrics.length
-        ? player.lyrics[player.activeLine].displayText
-        : '';
-    final subtitle = lyric.isNotEmpty ? lyric : song.subtitle;
-    final status = player.loading
-        ? '正在获取播放链接…'
-        : player.errorText ?? player.statusText ?? subtitle;
+    final ringColor = player.errorText != null
+        ? coralFor(context)
+        : accentFor(context);
 
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(11, 2, 11, 8),
-      child: Container(
-        height: 62,
-        decoration: BoxDecoration(
-          color: surfaceFor(context),
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: lineColor(context)),
-          boxShadow: <BoxShadow>[
-            BoxShadow(
-              color: Colors.black.withValues(alpha: auroraIsDark(context) ? 0.22 : 0.10),
-              blurRadius: 34,
-              offset: const Offset(0, 12),
-            ),
-          ],
-        ),
-        clipBehavior: Clip.antiAlias,
+    return Pressable(
+      onTap: () {
+        Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (_) => const PlayerScreen(),
+          ),
+        );
+      },
+      child: SizedBox(
+        width: diameter,
+        height: diameter,
         child: Stack(
+          alignment: Alignment.center,
           children: <Widget>[
-            Row(
-              children: <Widget>[
-                // Tap to open the player page.
-                Pressable(
-                  onTap: () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute<void>(
-                        builder: (_) => const PlayerScreen(),
+            // Drop shadow, painted outside the clipped glass so it stays visible.
+            Positioned.fill(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  boxShadow: <BoxShadow>[
+                    BoxShadow(
+                      color: Colors.black.withValues(
+                        alpha: auroraIsDark(context) ? 0.30 : 0.16,
                       ),
-                    );
-                  },
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(7, 8, 0, 8),
-                    child: Row(
-                      children: <Widget>[
-                        CoverArt(song: song, size: 46, radius: 12),
-                        const SizedBox(width: 10),
-                        ConstrainedBox(
-                          constraints: const BoxConstraints(maxWidth: 190),
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: <Widget>[
-                              Text(
-                                song.displayTitle,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: TextStyle(
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w700,
-                                  letterSpacing: -0.15,
-                                  color: textFor(context),
-                                ),
-                              ),
-                              const SizedBox(height: 2),
-                              Text(
-                                status,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: TextStyle(
-                                  fontSize: 10.5,
-                                  color: player.errorText != null
-                                      ? coralFor(context)
-                                      : mutedFor(context),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                const Spacer(),
-                // Play / pause.
-                Padding(
-                  padding: const EdgeInsets.only(right: 2),
-                  child: _MiniBtn(
-                    main: true,
-                    onTap: player.togglePlay,
-                    child: player.loading
-                        ? SizedBox(
-                            width: 15,
-                            height: 15,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: textFor(context),
-                            ),
-                          )
-                        : Icon(
-                            player.isPlaying
-                                ? CupertinoIcons.pause_fill
-                                : CupertinoIcons.play_fill,
-                            size: 17,
-                            color: textFor(context),
-                          ),
-                  ),
-                ),
-                // Next.
-                Padding(
-                  padding: const EdgeInsets.only(right: 7),
-                  child: _MiniBtn(
-                    onTap: player.next,
-                    child: Icon(
-                      CupertinoIcons.forward_fill,
-                      size: 15,
-                      color: mutedFor(context),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            // Progress line along the bottom edge.
-            Positioned(
-              left: 13,
-              right: 13,
-              bottom: 0,
-              height: 2,
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(2),
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: <Widget>[
-                    DecoratedBox(
-                      decoration: BoxDecoration(color: lineColor(context)),
-                    ),
-                    FractionallySizedBox(
-                      alignment: Alignment.centerLeft,
-                      widthFactor: progress,
-                      child: DecoratedBox(
-                        decoration: BoxDecoration(
-                          color: accentFor(context),
-                          borderRadius: BorderRadius.circular(2),
-                        ),
-                      ),
+                      blurRadius: 22,
+                      offset: const Offset(0, 8),
                     ),
                   ],
                 ),
+                child: const SizedBox.expand(),
               ),
+            ),
+            // Frosted glass disc.
+            ClipOval(
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+                child: Container(
+                  width: diameter,
+                  height: diameter,
+                  color: surfaceFor(context).withValues(
+                    alpha: auroraIsDark(context) ? 0.55 : 0.62,
+                  ),
+                ),
+              ),
+            ),
+            CoverArt(song: song, size: 42, radius: 21),
+            // Progress ring (or a spinner while the URL is being fetched).
+            Positioned.fill(
+              child: player.loading
+                  ? Padding(
+                      padding: const EdgeInsets.all(2),
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2.4,
+                        color: ringColor,
+                      ),
+                    )
+                  : CustomPaint(
+                      painter: _RingPainter(
+                        progress: progress,
+                        color: ringColor,
+                        trackColor: lineColor(context),
+                        thickness: 3,
+                      ),
+                    ),
             ),
           ],
         ),
@@ -176,34 +105,53 @@ class MiniPlayer extends StatelessWidget {
   }
 }
 
-class _MiniBtn extends StatelessWidget {
-  const _MiniBtn({
-    required this.child,
-    this.onTap,
-    this.main = false,
+class _RingPainter extends CustomPainter {
+  const _RingPainter({
+    required this.progress,
+    required this.color,
+    required this.trackColor,
+    required this.thickness,
   });
 
-  final Widget child;
-  final VoidCallback? onTap;
-  final bool main;
+  final double progress;
+  final Color color;
+  final Color trackColor;
+  final double thickness;
 
   @override
-  Widget build(BuildContext context) {
-    return Pressable(
-      onTap: onTap,
-      child: Container(
-        width: 34,
-        height: 34,
-        decoration: BoxDecoration(
-          color: main ? surface2For(context) : Colors.transparent,
-          borderRadius: BorderRadius.circular(11),
-        ),
-        child: Center(child: child),
-      ),
-    );
-  }
-}
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+    final radius = size.width / 2 - thickness / 2 - 0.5;
+    final rect = Rect.fromCircle(center: center, radius: radius);
 
-String miniPlayerTime(PlayerController player) {
-  return '${formatDuration(player.position)} / ${formatDuration(player.duration)}';
+    canvas.drawCircle(
+      center,
+      radius,
+      Paint()
+        ..color = trackColor
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = thickness,
+    );
+
+    if (progress > 0) {
+      canvas.drawArc(
+        rect,
+        -math.pi / 2,
+        2 * math.pi * progress,
+        false,
+        Paint()
+          ..color = color
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = thickness
+          ..strokeCap = StrokeCap.round,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _RingPainter oldDelegate) =>
+      oldDelegate.progress != progress ||
+      oldDelegate.color != color ||
+      oldDelegate.trackColor != trackColor ||
+      oldDelegate.thickness != thickness;
 }

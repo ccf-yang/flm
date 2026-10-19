@@ -1,11 +1,9 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/theme.dart';
 import '../../models/playlist.dart';
-import '../../services/backup_service.dart';
 import '../../state/library_state.dart';
 import '../kit.dart';
 import '../root_shell.dart' show kRootChromeSpace;
@@ -99,39 +97,6 @@ class LibraryTab extends StatelessWidget {
             caption: '${library.lovePlaylist.songs.length} 首',
             last: true,
             onTap: () => _openPlaylist(context, library.lovePlaylist),
-          ),
-          SectionHead(title: '工具', note: '数据与音源'),
-          _ToolsGrid(
-            children: <Widget>[
-              _ToolCard(
-                icon: CupertinoIcons.folder,
-                title: '导入本地音乐',
-                caption: '从「文件」选择音频',
-                onTap: () => _importLocal(context, library),
-              ),
-              _ToolCard(
-                icon: CupertinoIcons.square_arrow_up,
-                title: '导出备份',
-                caption: '列表、音源与设置',
-                onTap: () => _exportBackup(context, context.read<BackupService>()),
-              ),
-              _ToolCard(
-                icon: CupertinoIcons.square_arrow_down,
-                title: '导入备份',
-                caption: '恢复本机数据',
-                onTap: () => _importBackup(context, context.read<BackupService>()),
-              ),
-              _ToolCard(
-                icon: CupertinoIcons.capsule,
-                title: '自定义源',
-                caption: '管理 .js 播放脚本',
-                onTap: () {
-                  Navigator.of(context).push(
-                    MaterialPageRoute<void>(builder: (_) => const CustomSourcesScreen()),
-                  );
-                },
-              ),
-            ],
           ),
         ],
       ),
@@ -227,44 +192,6 @@ class LibraryTab extends StatelessWidget {
       final count = await library.importLocalMusic();
       if (!context.mounted) return;
       flmToast(context, count == 0 ? '没有导入任何歌曲' : '已导入 $count 首本地歌曲');
-    } catch (error) {
-      if (!context.mounted) return;
-      flmToast(context, '导入失败: $error');
-    }
-  }
-
-  Future<void> _exportBackup(BuildContext context, BackupService backup) async {
-    try {
-      final path = await backup.exportToFile();
-      if (!context.mounted) return;
-      final copy = await flmConfirmDialog(
-        context,
-        title: '备份已生成',
-        message: path,
-        cancelLabel: '关闭',
-        confirmLabel: '复制路径',
-      );
-      if (copy) {
-        Clipboard.setData(ClipboardData(text: path));
-        if (context.mounted) flmToast(context, '已复制备份路径');
-      }
-    } catch (error) {
-      if (!context.mounted) return;
-      flmToast(context, '导出失败: $error');
-    }
-  }
-
-  Future<void> _importBackup(BuildContext context, BackupService backup) async {
-    try {
-      final result = await backup.importFromFile();
-      if (!context.mounted) return;
-      if (result.isEmpty) return;
-      final parts = <String>[
-        '${result.playlists} 个列表',
-        '${result.sources} 个自定义源',
-        if (result.settings) '设置',
-      ];
-      flmToast(context, '已恢复 ${parts.join('、')}');
     } catch (error) {
       if (!context.mounted) return;
       flmToast(context, '导入失败: $error');
@@ -491,105 +418,6 @@ class _LibraryRow extends StatelessWidget {
             else
               Icon(CupertinoIcons.chevron_right, size: 14, color: faintFor(context)),
             const SizedBox(width: 2),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _ToolsGrid extends StatelessWidget {
-  const _ToolsGrid({required this.children});
-
-  final List<Widget> children;
-
-  @override
-  Widget build(BuildContext context) {
-    final rows = <Widget>[];
-    for (var i = 0; i < children.length; i += 2) {
-      rows.add(
-        Padding(
-          padding: EdgeInsets.only(bottom: i + 2 < children.length ? 9 : 0),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: <Widget>[
-              Expanded(child: children[i]),
-              const SizedBox(width: 9),
-              if (i + 1 < children.length)
-                Expanded(child: children[i + 1])
-              else
-                const Expanded(child: SizedBox()),
-            ],
-          ),
-        ),
-      );
-    }
-    return Padding(
-      padding: const EdgeInsets.only(top: 10),
-      child: Column(children: rows),
-    );
-  }
-}
-
-class _ToolCard extends StatelessWidget {
-  const _ToolCard({
-    required this.icon,
-    required this.title,
-    required this.caption,
-    required this.onTap,
-  });
-
-  final IconData icon;
-  final String title;
-  final String caption;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Pressable(
-      onTap: onTap,
-      child: Container(
-        constraints: const BoxConstraints(minHeight: 92),
-        padding: const EdgeInsets.all(13),
-        decoration: BoxDecoration(
-          color: surfaceFor(context),
-          borderRadius: BorderRadius.circular(17),
-          border: Border.all(color: lineColor(context)),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: <Widget>[
-            Container(
-              width: 30,
-              height: 30,
-              decoration: BoxDecoration(
-                color: accentSoftColor(context),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Icon(icon, size: 15, color: accentFor(context)),
-            ),
-            const SizedBox(height: 9),
-            Text(
-              title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: 11.5,
-                fontWeight: FontWeight.w600,
-                color: textFor(context),
-              ),
-            ),
-            const SizedBox(height: 2),
-            Text(
-              caption,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: 9,
-                height: 1.4,
-                color: faintFor(context),
-              ),
-            ),
           ],
         ),
       ),

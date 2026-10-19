@@ -2,7 +2,6 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/theme.dart';
 import '../../models/app_settings.dart';
@@ -209,33 +208,6 @@ class SettingsScreen extends StatelessWidget {
                           ),
                         ],
                       ),
-                      SectionHead(title: '关于'),
-                      _Group(
-                        children: <Widget>[
-                          _SettingRow(
-                            icon: CupertinoIcons.guitars,
-                            label: 'LX Music 项目',
-                            caption: 'github.com/lyswhut/lx-music-mobile',
-                            onTap: () async {
-                              await launchUrl(
-                                Uri.parse('https://github.com/lyswhut/lx-music-mobile'),
-                                mode: LaunchMode.externalApplication,
-                              );
-                            },
-                          ),
-                          _SettingRow(
-                            icon: CupertinoIcons.guitars,
-                            label: 'LX 同步服务',
-                            caption: 'github.com/lyswhut/lx-music-sync-server',
-                            onTap: () async {
-                              await launchUrl(
-                                Uri.parse('https://github.com/lyswhut/lx-music-sync-server'),
-                                mode: LaunchMode.externalApplication,
-                              );
-                            },
-                          ),
-                        ],
-                      ),
                     ],
                   ),
                 ),
@@ -381,7 +353,7 @@ class _IntroCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  '版本 1.0.0 · 基于 LX Music 音乐源协议',
+                  '版本 1.0.0 · 安静的光，随处可听',
                   style: TextStyle(fontSize: 11, color: mutedFor(context)),
                 ),
               ],

@@ -12,7 +12,10 @@ import 'tabs/search_tab.dart';
 import 'widgets/mini_player.dart';
 
 /// Height left free at the bottom of tab scrolls for the floating chrome.
-const double kRootChromeSpace = 186;
+const double kRootChromeSpace = 150;
+
+/// Visual height of the tab bar row, excluding the bottom safe-area inset.
+const double kTabBarHeight = 52;
 
 class RootShell extends StatefulWidget {
   const RootShell({super.key});
@@ -51,6 +54,12 @@ class _RootShellState extends State<RootShell> {
               ],
             ),
           ),
+          // Floating now-playing pendant, resting just above the tab bar.
+          Positioned(
+            right: 16,
+            bottom: kTabBarHeight + MediaQuery.paddingOf(context).bottom + 12,
+            child: const MiniPlayer(),
+          ),
           Positioned(
             left: 0,
             right: 0,
@@ -74,7 +83,6 @@ class _RootShellState extends State<RootShell> {
                     ),
                   ),
                 ),
-                const MiniPlayer(),
                 _AuroraTabBar(
                   index: _index,
                   onTap: (next) => setState(() => _index = next),
