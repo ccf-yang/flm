@@ -119,13 +119,23 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   void _restoreLastPlayback() {
     if (!appState.settings.saveProgress) return;
     final song = appState.settings.lastSong;
-    if (song == null) return;
-    _queue = <Song>[song];
-    _index = 0;
-    _current = song;
+    var queue = appState.settings.lastQueue;
+    if (queue.isEmpty && song != null) queue = <Song>[song];
+    if (queue.isEmpty) return;
+    var index = appState.settings.lastQueueIndex;
+    if (song != null) {
+      final match = queue.indexWhere(
+        (item) => item.id == song.id && item.source == song.source,
+      );
+      if (match >= 0) index = match;
+    }
+    index = index.clamp(0, queue.length - 1);
+    _queue = queue;
+    _index = index;
+    _current = queue[index];
     _position = Duration(milliseconds: appState.settings.lastPositionMs);
     _statusText = '上次播放 · 点击继续';
-    service.setMediaItem(song);
+    service.setMediaItem(_current!);
     _notify();
   }
 
@@ -189,6 +199,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       }
       appState.settings.lastSongJson = song.toJson();
       appState.settings.lastPositionMs = initialPosition.inMilliseconds;
+      _persistQueue();
       unawaited(appState.repository.save());
       unawaited(_loadLyrics(song));
       unawaited(_preloadNext());
@@ -609,6 +620,11 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     _statusText = null;
     _errorText = null;
     _urlCache.clear();
+    appState.settings.lastQueueJson = null;
+    appState.settings.lastQueueIndex = 0;
+    appState.settings.lastSongJson = null;
+    appState.settings.lastPositionMs = 0;
+    unawaited(appState.repository.save());
     await service.stop();
     _notify();
   }
@@ -617,7 +633,25 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     if (!appState.settings.saveProgress || _current == null) return;
     appState.settings.lastSongJson = _current!.toJson();
     appState.settings.lastPositionMs = _position.inMilliseconds;
+    _persistQueue();
     unawaited(appState.repository.save());
+  }
+
+  /// Persist the whole queue (windowed to 300 around the current track) so an
+  /// app restart restores the playlist instead of a single repeating song.
+  void _persistQueue() {
+    if (_queue.isEmpty || _index < 0) return;
+    const cap = 300;
+    var queue = _queue;
+    var index = _index;
+    if (queue.length > cap) {
+      final start = max(0, min(index - 50, queue.length - cap));
+      queue = queue.sublist(start, start + cap);
+      index = index - start;
+    }
+    appState.settings.lastQueueJson =
+        queue.map((song) => song.toJson()).toList();
+    appState.settings.lastQueueIndex = index.clamp(0, queue.length - 1);
   }
 
   @override

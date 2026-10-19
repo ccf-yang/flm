@@ -14,6 +14,10 @@ class LibraryState extends ChangeNotifier {
   final LibraryRepository repository;
   final LocalMusicService localMusic;
 
+  /// Fired when a song just became loved (not when un-loved). Wired in main()
+  /// to the auto-download service.
+  void Function(Song song)? onSongLoved;
+
   List<Playlist> get playlists => repository.playlists;
   Playlist get defaultPlaylist => repository.defaultPlaylist;
   Playlist get lovePlaylist => repository.lovePlaylist;
@@ -68,6 +72,7 @@ class LibraryState extends ChangeNotifier {
   bool toggleLove(Song song) {
     final result = repository.toggleLove(song);
     notifyListeners();
+    if (result) onSongLoved?.call(song);
     return result;
   }
 

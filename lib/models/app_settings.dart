@@ -32,6 +32,8 @@ class AppSettings {
     List<String>? dislikedKeys,
     this.lastSongJson,
     this.lastPositionMs = 0,
+    this.lastQueueJson,
+    this.lastQueueIndex = 0,
     this.searchSource = 'all',
     this.songlistSource = 'kw',
     this.leaderboardSource = 'kw',
@@ -51,6 +53,8 @@ class AppSettings {
   List<String> dislikedKeys;
   Map<String, dynamic>? lastSongJson;
   int lastPositionMs;
+  List<Map<String, dynamic>>? lastQueueJson;
+  int lastQueueIndex;
   String searchSource;
   String songlistSource;
   String leaderboardSource;
@@ -63,6 +67,21 @@ class AppSettings {
     } catch (_) {
       return null;
     }
+  }
+
+  List<Song> get lastQueue {
+    final rows = lastQueueJson;
+    if (rows == null || rows.isEmpty) return const <Song>[];
+    final songs = <Song>[];
+    for (final row in rows) {
+      try {
+        final song = Song.fromJson(row);
+        if (song.id.isNotEmpty) songs.add(song);
+      } catch (_) {
+        continue;
+      }
+    }
+    return songs;
   }
 
   static String dislikeKeyFor(Song song) =>
@@ -99,6 +118,11 @@ class AppSettings {
           ? Map<String, dynamic>.from(json['lastSongJson'] as Map)
           : null,
       lastPositionMs: (json['lastPositionMs'] as num?)?.toInt() ?? 0,
+      lastQueueJson: (json['lastQueueJson'] as List<dynamic>? ?? <dynamic>[])
+          .whereType<Map>()
+          .map((item) => Map<String, dynamic>.from(item))
+          .toList(),
+      lastQueueIndex: (json['lastQueueIndex'] as num?)?.toInt() ?? 0,
       searchSource: '${json['searchSource'] ?? 'all'}',
       songlistSource: '${json['songlistSource'] ?? 'kw'}',
       leaderboardSource: '${json['leaderboardSource'] ?? 'kw'}',
@@ -119,6 +143,8 @@ class AppSettings {
         'dislikedKeys': dislikedKeys,
         'lastSongJson': lastSongJson,
         'lastPositionMs': lastPositionMs,
+        'lastQueueJson': lastQueueJson,
+        'lastQueueIndex': lastQueueIndex,
         'searchSource': searchSource,
         'songlistSource': songlistSource,
         'leaderboardSource': leaderboardSource,

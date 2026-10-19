@@ -9,14 +9,29 @@ import '../models/song.dart';
 import 'local_metadata_reader.dart';
 
 class LocalMusicService {
+  static const Set<String> _audioExtensions = <String>{
+    'mp3', 'm4a', 'm4b', 'aac', 'flac', 'wav', 'alac', 'aiff',
+    'ogg', 'opus', 'wma', 'ape', 'mva', 'mp2',
+  };
+
   Future<List<Song>> pickAndImport() async {
+    // FileType.audio maps to UTType filters on iOS that crash inside the native
+    // picker on some file providers; pick with FileType.any and filter here.
     final result = await FilePicker.platform.pickFiles(
-      type: FileType.audio,
+      type: FileType.any,
       allowMultiple: true,
       withData: false,
     );
     if (result == null) return const <Song>[];
-    return importPickedFiles(result.files);
+    final files = result.files.where(_looksAudio).toList();
+    if (files.isEmpty) return const <Song>[];
+    return importPickedFiles(files);
+  }
+
+  bool _looksAudio(PlatformFile file) {
+    final ext = p.extension(file.name).replaceFirst('.', '').toLowerCase();
+    if (ext.isEmpty) return false;
+    return _audioExtensions.contains(ext);
   }
 
   Future<List<Song>> importPickedFiles(List<PlatformFile> files) async {

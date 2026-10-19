@@ -10,6 +10,7 @@ import 'data/custom_source_repository.dart';
 import 'data/library_repository.dart';
 import 'data/settings_repository.dart';
 import 'services/backup_service.dart';
+import 'services/download_service.dart';
 import 'services/http_bridge.dart';
 import 'services/local_music_service.dart';
 import 'services/online_engine.dart';
@@ -69,6 +70,11 @@ Future<void> main() async {
   );
   final searchState = SearchState(engine: onlineEngine, appState: appState);
   final discoverState = DiscoverState(engine: onlineEngine, appState: appState);
+  final downloadService = DownloadService(
+    sourceState: sourceState,
+    libraryState: libraryState,
+  );
+  libraryState.onSongLoved = (song) => unawaited(downloadService.downloadToLibrary(song));
   final backupService = BackupService(
     libraryRepository: libraryRepository,
     libraryState: libraryState,

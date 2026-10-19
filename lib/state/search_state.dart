@@ -31,12 +31,10 @@ class SearchState extends ChangeNotifier {
   String? error;
   List<Song> musicResults = <Song>[];
   List<Map<String, dynamic>> songlistResults = <Map<String, dynamic>>[];
-  List<String> hotSearch = <String>[];
   List<String> tips = <String>[];
 
   Timer? _tipTimer;
   int _searchToken = 0;
-  bool _hotLoaded = false;
 
   void setType(SearchType next) {
     if (type == next) return;
@@ -51,7 +49,6 @@ class SearchState extends ChangeNotifier {
     appState.settings.searchSource = next;
     await appState.repository.save();
     clear();
-    _hotLoaded = false;
     notifyListeners();
     if (query.trim().isNotEmpty) {
       await search(query);
@@ -176,36 +173,6 @@ class SearchState extends ChangeNotifier {
     } finally {
       loadingMore = false;
       notifyListeners();
-    }
-  }
-
-  Future<void> loadHotSearch() async {
-    if (_hotLoaded) return;
-    _hotLoaded = true;
-    try {
-      if (source == 'all') {
-        final sources = <String>['kw', 'kg', 'tx', 'wy', 'mg'];
-        final results = await Future.wait(
-          sources.map((item) async {
-            try {
-              final value = await engine.call('hotSearch', <String, dynamic>{'source': item});
-              final map = value is Map ? Map<String, dynamic>.from(value) : <String, dynamic>{};
-              return (map['list'] as List<dynamic>? ?? <dynamic>[]).map((word) => '$word').toList();
-            } catch (_) {
-              return <String>[];
-            }
-          }),
-        );
-        final seen = <String>{};
-        hotSearch = results.expand((list) => list).where(seen.add).take(30).toList();
-      } else {
-        final value = await engine.call('hotSearch', <String, dynamic>{'source': source});
-        final map = value is Map ? Map<String, dynamic>.from(value) : <String, dynamic>{};
-        hotSearch = (map['list'] as List<dynamic>? ?? <dynamic>[]).map((word) => '$word').toList();
-      }
-      notifyListeners();
-    } catch (_) {
-      _hotLoaded = false;
     }
   }
 

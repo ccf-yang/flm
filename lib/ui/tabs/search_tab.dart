@@ -34,10 +34,6 @@ class _SearchTabState extends State<SearchTab> {
   void initState() {
     super.initState();
     _scrollController.addListener(_onScroll);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      context.read<SearchState>().loadHotSearch().catchError((_) {});
-    });
   }
 
   @override
@@ -70,6 +66,20 @@ class _SearchTabState extends State<SearchTab> {
     final player = context.read<PlayerController>();
     final index = library.ensureInDefault(song);
     player.playSong(song, queue: library.defaultPlaylist.songs, index: index);
+  }
+
+  void _playAll() {
+    final search = context.read<SearchState>();
+    final songs = search.musicResults;
+    if (songs.isEmpty) return;
+    final library = context.read<LibraryState>();
+    final player = context.read<PlayerController>();
+    library.addSongs(library.defaultPlaylist.id, songs);
+    player.playSong(
+      songs.first,
+      queue: library.defaultPlaylist.songs,
+      index: library.defaultPlaylist.indexOf(songs.first),
+    );
   }
 
   @override
@@ -163,30 +173,10 @@ class _SearchTabState extends State<SearchTab> {
               value: search.source,
               onChanged: (value) async {
                 await search.setSource(value);
-                await search.loadHotSearch();
               },
             ),
           ),
         ),
-        if (search.hotSearch.isNotEmpty) ...<Widget>[
-          SliverToBoxAdapter(
-            child: SectionHead(
-              title: '热门搜索',
-              actionLabel: '换一批',
-              actionIcon: CupertinoIcons.arrow_clockwise,
-              onAction: () => search.loadHotSearch(),
-            ),
-          ),
-          SliverPadding(
-            padding: EdgeInsets.symmetric(horizontal: kGutter),
-            sliver: SliverToBoxAdapter(
-              child: _HotGrid(
-                words: search.hotSearch.take(12).toList(),
-                onPick: _useKeyword,
-              ),
-            ),
-          ),
-        ],
         if (history.isNotEmpty) ...<Widget>[
           SliverToBoxAdapter(
             child: SectionHead(
@@ -212,21 +202,6 @@ class _SearchTabState extends State<SearchTab> {
             ),
           ),
         ],
-        if (search.hotSearch.isEmpty && history.isEmpty && search.loading == false && search.error != null)
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.only(top: 40),
-              child: EmptyState(
-                title: '搜索暂不可用',
-                message: search.error,
-                icon: CupertinoIcons.exclamationmark_shield_fill,
-                action: AuroraButton(
-                  label: '重试',
-                  onTap: () => search.loadHotSearch(),
-                ),
-              ),
-            ),
-          ),
         SliverToBoxAdapter(child: SizedBox(height: kRootChromeSpace)),
       ],
     );
@@ -491,80 +466,39 @@ class _SearchTabState extends State<SearchTab> {
                   '按相关度排序',
                   style: TextStyle(fontSize: 9.5, color: faintFor(context)),
                 ),
-                Text(
-                  '点击歌曲直接播放',
-                  style: TextStyle(fontSize: 9.5, color: faintFor(context)),
-                ),
+                if (search.type == SearchType.music && search.musicResults.isNotEmpty)
+                  Pressable(
+                    onTap: _playAll,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: accentFor(context).withValues(alpha: 0.14),
+                        borderRadius: BorderRadius.circular(999),
+                        border: Border.all(color: accentFor(context).withValues(alpha: 0.35)),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: <Widget>[
+                          Icon(CupertinoIcons.play_fill, size: 10, color: accentFor(context)),
+                          const SizedBox(width: 5),
+                          Text(
+                            '播放全部',
+                            style: TextStyle(
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.w600,
+                              color: accentFor(context),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),
           Expanded(child: body),
         ],
       ),
-    );
-  }
-}
-
-class _HotGrid extends StatelessWidget {
-  const _HotGrid({required this.words, required this.onPick});
-
-  final List<String> words;
-  final ValueChanged<String> onPick;
-
-  @override
-  Widget build(BuildContext context) {
-    return GridView.builder(
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 2,
-        mainAxisSpacing: 8,
-        crossAxisSpacing: 8,
-        childAspectRatio: 108 / 42,
-      ),
-      itemCount: words.length,
-      itemBuilder: (context, index) {
-        final word = words[index];
-        return Pressable(
-          onTap: () => onPick(word),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10),
-            decoration: BoxDecoration(
-              color: surfaceFor(context),
-              borderRadius: BorderRadius.circular(13),
-              border: Border.all(color: lineColor(context)),
-            ),
-            child: Row(
-              children: <Widget>[
-                SizedBox(
-                  width: 15,
-                  child: Text(
-                    (index + 1).toString().padLeft(2, '0'),
-                    style: TextStyle(
-                      fontSize: 9,
-                      fontWeight: FontWeight.w700,
-                      color: index < 3 ? accentFor(context) : faintFor(context),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 9),
-                Expanded(
-                  child: Text(
-                    word,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w500,
-                      color: textFor(context),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
     );
   }
 }
