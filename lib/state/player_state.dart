@@ -15,6 +15,7 @@ import '../services/lyric_parser.dart';
 import '../services/debug_log.dart';
 import '../services/online_engine.dart';
 import '../services/player_service.dart';
+import '../services/url_probe.dart';
 import 'app_state.dart';
 import 'library_state.dart';
 import 'source_state.dart';
@@ -270,6 +271,25 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
         // resolved. Starting this stale track now would silently play the
         // wrong song, so drop it.
         if (token != _playToken || _disposed) return;
+        final probe = await probeAudioUrl(url);
+        debugLog?.record('播放前探测 ${song.name}', <String, Object?>{
+          '地址': url,
+          '状态': probe.networkFailed ? '请求失败' : probe.status,
+          '类型': probe.contentType.isEmpty ? '未知' : probe.contentType,
+          '长度': probe.length < 0 ? '未知' : probe.length,
+          '耗时': '${probe.elapsedMs}ms',
+          '错误': probe.error,
+        });
+        // A probe that fails on DNS/TLS must not veto playback: the player may
+        // still reach the stream. Only a definite rejection or an HTML body is
+        // treated as a dead link so the pool can move to the next source.
+        if (probe.rejected) {
+          throw StateError('播放地址被拒绝（HTTP ${probe.status}）');
+        }
+        if (probe.notAudio) {
+          throw StateError('播放地址返回的是网页而不是音频（${probe.contentType}）');
+        }
+        if (token != _playToken || _disposed) return;
         await service.playUrl(url, initialPosition: initialPosition);
       }
       if (token != _playToken || _disposed) return;
@@ -307,6 +327,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       if (allowRetry && !song.isLocal && sourceState.hasActiveSource) {
         debugLog?.record('播放失败重试 ${song.name}', <String, Object?>{
           '错误': '$error',
+          '地址': handedUrl,
           '堆栈': '$stack',
         });
         _urlCache.remove(_songKey(song));
@@ -339,6 +360,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
         debugLog?.record('自动跳歌 → ${_queue[nextIdx].name}', <String, Object?>{
           '失败歌曲': song.name,
           '错误': '$error',
+          '失败地址': handedUrl,
           '源侧原因': sourceState.lastPoolError,
           '已跳数': _autoSkips,
         });
@@ -428,12 +450,27 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  /// iOS surfaces failed media links as bare AVFoundation/NSURLError codes,
+  /// which say nothing useful on screen. The debug log keeps the raw error.
+  static const Map<String, String> _playerHints = <String, String>{
+    '-1102': '音频地址被拒绝或已过期，正在换源',
+    '-11850': '音频流中断，这个地址大概不是音频',
+    '-11800': '播放器无法加载这个音频地址',
+    '-11821': '音频格式无法识别',
+    '-1004': '连不上音频服务器',
+    '-1009': '网络不可用，取不到音频',
+    '-1022': '该音频地址的连接方式被系统拦截',
+  };
+
   String _friendlyError(Object error) {
     var message = error.toString();
     for (final prefix in <String>['Exception: ', 'StateError: ', 'Bad state: ']) {
       if (message.startsWith(prefix)) message = message.substring(prefix.length);
     }
-    return message;
+    final code = RegExp(r'Code=(-?\d+)').firstMatch(message)?.group(1) ??
+        RegExp(r'\((-1\d{3,4})\)').firstMatch(message)?.group(1);
+    final hint = code == null ? null : _playerHints[code];
+    return hint ?? message;
   }
 
   Future<void> _loadLyrics(Song song) async {
