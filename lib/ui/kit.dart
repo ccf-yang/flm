@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
@@ -105,24 +106,31 @@ class IconBtn extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final radius = BorderRadius.circular(size * 0.34);
     final button = Pressable(
       onTap: onTap,
-      child: Container(
-        width: size,
-        height: size,
-        decoration: BoxDecoration(
-          color: active ? accentSoftColor(context) : surfaceFor(context),
-          borderRadius: BorderRadius.circular(size * 0.34),
-          border: Border.all(
-            color: active ? accentBorderColor(context) : lineColor(context),
+      child: ClipRRect(
+        borderRadius: radius,
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+          child: Container(
+            width: size,
+            height: size,
+            decoration: BoxDecoration(
+              color: active ? accentSoftColor(context) : surfaceFor(context),
+              borderRadius: radius,
+              border: Border.all(
+                color: active ? accentBorderColor(context) : lineColor(context),
+              ),
+            ),
+            child: Icon(
+              icon,
+              size: iconSize ?? size * 0.47,
+              color: onTap == null
+                  ? faintFor(context)
+                  : (active ? accentFor(context) : (color ?? mutedFor(context))),
+            ),
           ),
-        ),
-        child: Icon(
-          icon,
-          size: iconSize ?? size * 0.47,
-          color: onTap == null
-              ? faintFor(context)
-              : (active ? accentFor(context) : (color ?? mutedFor(context))),
         ),
       ),
     );
@@ -244,19 +252,28 @@ class Chip extends StatelessWidget {
       child: AnimatedContainer(
         duration: AuroraMotion.quick,
         height: 32,
-        padding: const EdgeInsets.symmetric(horizontal: 14),
+        padding: const EdgeInsets.symmetric(horizontal: 13),
         alignment: Alignment.center,
         decoration: BoxDecoration(
-          color: active ? accentFor(context) : surfaceFor(context),
+          color: active ? accentFor(context) : Colors.transparent,
           borderRadius: BorderRadius.circular(999),
           border: Border.all(
-            color: active ? accentFor(context) : lineColor(context),
+            color: active ? Colors.transparent : lineColor(context),
           ),
+          boxShadow: active
+              ? <BoxShadow>[
+                  BoxShadow(
+                    color: accentFor(context).withValues(alpha: 0.16),
+                    blurRadius: 18,
+                    offset: const Offset(0, 6),
+                  ),
+                ]
+              : null,
         ),
         child: Text(
           label,
           style: TextStyle(
-            fontSize: 12.5,
+            fontSize: 12,
             fontWeight: active ? FontWeight.w700 : FontWeight.w600,
             color: active ? accentInkFor(context) : mutedFor(context),
           ),
@@ -279,7 +296,7 @@ class ChipRow extends StatelessWidget {
       height: 36,
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
-        padding: padding ?? EdgeInsets.symmetric(horizontal: kGutter),
+        padding: padding ?? const EdgeInsets.symmetric(horizontal: kGutter),
         itemCount: children.length,
         separatorBuilder: (_, __) => const SizedBox(width: 7),
         itemBuilder: (context, index) => children[index],
@@ -358,8 +375,8 @@ class AuroraSegmented extends StatelessWidget {
               child: AnimatedContainer(
                 duration: AuroraMotion.quick,
                 decoration: BoxDecoration(
-                  color: active ? surfaceFor(context) : Colors.transparent,
-                  borderRadius: BorderRadius.circular(11),
+                  color: active ? panelFor(context) : Colors.transparent,
+                  borderRadius: BorderRadius.circular(10),
                   boxShadow: active
                       ? const <BoxShadow>[
                           BoxShadow(color: Color(0x2E000000), blurRadius: 8, offset: Offset(0, 2)),
@@ -387,8 +404,9 @@ class AuroraSegmented extends StatelessWidget {
   }
 }
 
-/// The signature search field (.searchbar, h48 r15).
-class SearchField extends StatelessWidget {
+/// The signature search field (.searchbar, h48 r15, surface-2 → accent on
+/// focus with a soft accent ring).
+class SearchField extends StatefulWidget {
   const SearchField({
     super.key,
     required this.controller,
@@ -411,25 +429,67 @@ class SearchField extends StatelessWidget {
   final VoidCallback? onClear;
 
   @override
+  State<SearchField> createState() => _SearchFieldState();
+}
+
+class _SearchFieldState extends State<SearchField> {
+  final FocusNode _focusNode = FocusNode();
+  bool _focused = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _focusNode.addListener(_onFocusChanged);
+  }
+
+  void _onFocusChanged() {
+    if (_focused != _focusNode.hasFocus) {
+      setState(() => _focused = _focusNode.hasFocus);
+    }
+  }
+
+  @override
+  void dispose() {
+    _focusNode.removeListener(_onFocusChanged);
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return Container(
+    final compact = widget.compact;
+    return AnimatedContainer(
+      duration: AuroraMotion.quick,
+      curve: AuroraMotion.ease,
       height: compact ? 42 : 48,
       decoration: BoxDecoration(
-        color: surfaceFor(context),
+        color: _focused ? surfaceFor(context) : surface2For(context),
         borderRadius: BorderRadius.circular(compact ? 13 : 15),
-        border: Border.all(color: lineStrongColor(context)),
+        border: Border.all(
+          color: _focused ? accentFor(context) : lineColor(context),
+        ),
+        boxShadow: _focused
+            ? <BoxShadow>[
+                BoxShadow(
+                  color: accentSoftColor(context),
+                  blurRadius: 0,
+                  spreadRadius: 3,
+                ),
+              ]
+            : null,
       ),
-      padding: EdgeInsets.symmetric(horizontal: compact ? 12 : 14),
+      padding: const EdgeInsets.symmetric(horizontal: 12),
       child: Row(
         children: <Widget>[
           Icon(CupertinoIcons.search, size: compact ? 15 : 17, color: faintFor(context)),
           const SizedBox(width: 9),
           Expanded(
             child: TextField(
-              controller: controller,
-              autofocus: autofocus,
-              onChanged: onChanged,
-              onSubmitted: onSubmitted,
+              controller: widget.controller,
+              focusNode: _focusNode,
+              autofocus: widget.autofocus,
+              onChanged: widget.onChanged,
+              onSubmitted: widget.onSubmitted,
               textInputAction: TextInputAction.search,
               style: TextStyle(
                 fontSize: 14,
@@ -438,8 +498,8 @@ class SearchField extends StatelessWidget {
               ),
               decoration: InputDecoration(
                 isCollapsed: true,
-                hintStyle: TextStyle(fontSize: 13.5, color: faintFor(context)),
-                hintText: hint,
+                hintStyle: TextStyle(fontSize: 13, color: faintFor(context)),
+                hintText: widget.hint,
                 border: InputBorder.none,
                 enabledBorder: InputBorder.none,
                 focusedBorder: InputBorder.none,
@@ -448,18 +508,18 @@ class SearchField extends StatelessWidget {
               ),
             ),
           ),
-          if (controller.text.isNotEmpty && onClear != null)
+          if (widget.controller.text.isNotEmpty && widget.onClear != null)
             Pressable(
-              onTap: onClear,
+              onTap: widget.onClear,
               child: Padding(
                 padding: const EdgeInsets.only(left: 6),
                 child: Icon(CupertinoIcons.xmark_circle_fill, size: 16, color: faintFor(context)),
               ),
             )
-          else if (trailing != null)
+          else if (widget.trailing != null)
             DefaultTextStyle(
               style: DefaultTextStyle.of(context).style,
-              child: trailing!,
+              child: widget.trailing!,
             ),
         ],
       ),
@@ -474,15 +534,15 @@ class EnterKbd extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 4),
       decoration: BoxDecoration(
-        color: surface2For(context),
-        borderRadius: BorderRadius.circular(6),
+        color: bgFor(context),
+        borderRadius: BorderRadius.circular(5),
         border: Border.all(color: lineColor(context)),
       ),
       child: Text(
         '↵',
-        style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: faintFor(context)),
+        style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.w700, color: faintFor(context)),
       ),
     );
   }
@@ -508,7 +568,7 @@ class SectionHead extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: EdgeInsets.fromLTRB(kGutter, 22, kGutter - 6, 11),
+      padding: const EdgeInsets.fromLTRB(kGutter, 22, kGutter - 6, 11),
       child: Row(
         children: <Widget>[
           Expanded(
@@ -608,28 +668,47 @@ class StatusChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = ok ? accentFor(context) : faintFor(context);
-    return Container(
-      height: 28,
-      padding: const EdgeInsets.symmetric(horizontal: 11),
-      decoration: BoxDecoration(
-        color: surfaceFor(context),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: ok ? accentBorderColor(context) : lineColor(context)),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: <Widget>[
-          Container(
-            width: 6,
-            height: 6,
-            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+    final radius = BorderRadius.circular(999);
+    return ClipRRect(
+      borderRadius: radius,
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+        child: Container(
+          height: 28,
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          decoration: BoxDecoration(
+            color: surfaceFor(context),
+            borderRadius: radius,
+            border: Border.all(color: ok ? accentBorderColor(context) : lineColor(context)),
           ),
-          const SizedBox(width: 7),
-          Text(
-            label,
-            style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: color),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Container(
+                width: 5,
+                height: 5,
+                decoration: BoxDecoration(
+                  color: color,
+                  shape: BoxShape.circle,
+                  boxShadow: ok
+                      ? <BoxShadow>[
+                          BoxShadow(
+                            color: accentSoftColor(context),
+                            blurRadius: 0,
+                            spreadRadius: 3,
+                          ),
+                        ]
+                      : null,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Text(
+                label,
+                style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.w600, color: color),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
@@ -1109,7 +1188,7 @@ class _FlmSheet extends StatelessWidget {
           ),
           child: Container(
             decoration: BoxDecoration(
-              color: surfaceFor(context),
+              color: panelFor(context),
               borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
               border: Border(top: BorderSide(color: lineStrongColor(context))),
               boxShadow: const <BoxShadow>[
@@ -1304,7 +1383,8 @@ class OptionRow extends StatelessWidget {
   }
 }
 
-/// Primary pill button (.btn-primary) with the accent→strong gradient.
+/// Primary / ghost button, matching `.btn` in the design study (solid accent
+/// fill, 14px rounded rect, soft accent glow).
 class AuroraButton extends StatelessWidget {
   const AuroraButton({
     super.key,
@@ -1314,7 +1394,7 @@ class AuroraButton extends StatelessWidget {
     this.expand = false,
     this.secondary = false,
     this.square = false,
-    this.height = 44,
+    this.height = 45,
   });
 
   final String? label;
@@ -1333,7 +1413,9 @@ class AuroraButton extends StatelessWidget {
       content = Icon(
         icon,
         size: height * 0.4,
-        color: secondary ? mutedFor(context) : accentInkFor(context),
+        color: secondary
+            ? (enabled ? textFor(context) : faintFor(context))
+            : (enabled ? accentInkFor(context) : faintFor(context)),
       );
     } else {
       content = Row(
@@ -1344,7 +1426,9 @@ class AuroraButton extends StatelessWidget {
             Icon(
               icon,
               size: 17,
-              color: secondary ? mutedFor(context) : accentInkFor(context),
+              color: secondary
+                  ? (enabled ? textFor(context) : faintFor(context))
+                  : (enabled ? accentInkFor(context) : faintFor(context)),
             ),
             const SizedBox(width: 7),
           ],
@@ -1354,7 +1438,7 @@ class AuroraButton extends StatelessWidget {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
-                fontSize: 14,
+                fontSize: 13,
                 fontWeight: FontWeight.w700,
                 letterSpacing: -0.1,
                 color: secondary
@@ -1367,9 +1451,9 @@ class AuroraButton extends StatelessWidget {
       );
     }
 
-    final borderRadius = square
-        ? BorderRadius.circular(height * 0.32)
-        : BorderRadius.circular(999);
+    // `.btn` in the design study: a 14px rounded rect, not a full pill.
+    final borderRadius = BorderRadius.circular(square ? 13 : 14);
+    final filled = !secondary && enabled;
 
     return Pressable(
       onTap: onTap,
@@ -1377,31 +1461,26 @@ class AuroraButton extends StatelessWidget {
         duration: AuroraMotion.quick,
         height: height,
         width: square ? height : null,
-        padding: square
-            ? null
-            : EdgeInsets.symmetric(horizontal: expand ? 16 : 20),
+        padding: square ? null : const EdgeInsets.symmetric(horizontal: 18),
         alignment: Alignment.center,
         decoration: BoxDecoration(
           borderRadius: borderRadius,
-          gradient: !secondary && enabled
-              ? const LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: AppColors.brandGradient,
-                )
-              : null,
-          color: secondary ? surface2For(context) : null,
-          border: secondary
-              ? Border.all(color: lineColor(context))
-              : enabled
-                  ? Border.all(color: accentFor(context).withValues(alpha: 0.5))
-                  : Border.all(color: lineColor(context)),
-          boxShadow: !secondary && enabled
+          color: filled
+              ? accentFor(context)
+              : secondary || !enabled
+                  ? surface2For(context)
+                  : null,
+          border: Border.all(
+            color: filled
+                ? Colors.transparent
+                : lineColor(context),
+          ),
+          boxShadow: filled
               ? <BoxShadow>[
                   BoxShadow(
-                    color: const Color(0xFF14B8A6).withValues(alpha: 0.28),
-                    blurRadius: 18,
-                    offset: const Offset(0, 6),
+                    color: accentFor(context).withValues(alpha: 0.20),
+                    blurRadius: 26,
+                    offset: const Offset(0, 10),
                   ),
                 ]
               : null,
@@ -1500,44 +1579,54 @@ class _FlmToastState extends State<_FlmToast> with SingleTickerProviderStateMixi
 
   @override
   Widget build(BuildContext context) {
-    final isDark = auroraIsDark(context);
+    final maxWidth = MediaQuery.sizeOf(context).width - 60;
+    final radius = BorderRadius.circular(12);
     return Align(
-      alignment: const Alignment(0, -0.58),
-      child: FadeTransition(
-        opacity: _controller,
-        child: SlideTransition(
-          position: Tween<Offset>(
-            begin: const Offset(0, 0.12),
-            end: Offset.zero,
-          ).animate(CurvedAnimation(parent: _controller, curve: AuroraMotion.spring)),
-          child: Material(
-            type: MaterialType.transparency,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
-              decoration: BoxDecoration(
-                color: isDark ? const Color(0xE61F2730) : const Color(0xE6101511),
-                borderRadius: BorderRadius.circular(999),
-                border: Border.all(color: lineStrongColor(context)),
-                boxShadow: const <BoxShadow>[
-                  BoxShadow(color: Color(0x40000000), blurRadius: 24, offset: Offset(0, 8)),
-                ],
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: <Widget>[
-                  Icon(CupertinoIcons.check_mark, size: 14, color: AppColors.accentDark),
-                  const SizedBox(width: 8),
-                  Flexible(
+      alignment: Alignment.bottomCenter,
+      child: Padding(
+        padding: EdgeInsets.only(
+          left: 30,
+          right: 30,
+          bottom: MediaQuery.paddingOf(context).bottom + 96,
+        ),
+        child: FadeTransition(
+          opacity: _controller,
+          child: SlideTransition(
+            position: Tween<Offset>(
+              begin: const Offset(0, 0.28),
+              end: Offset.zero,
+            ).animate(CurvedAnimation(parent: _controller, curve: AuroraMotion.spring)),
+            child: Material(
+              type: MaterialType.transparency,
+              child: ClipRRect(
+                borderRadius: radius,
+                child: BackdropFilter(
+                  filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+                  child: Container(
+                    constraints: BoxConstraints(maxWidth: maxWidth),
+                    padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xED0F1317),
+                      borderRadius: radius,
+                      border: Border.all(color: const Color(0x1AFFFFFF)),
+                      boxShadow: const <BoxShadow>[
+                        BoxShadow(color: Color(0x4D000000), blurRadius: 30, offset: Offset(0, 12)),
+                      ],
+                    ),
                     child: Text(
                       widget.message,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.center,
                       style: const TextStyle(
-                        fontSize: 12.5,
-                        fontWeight: FontWeight.w600,
+                        fontSize: 10.5,
+                        fontWeight: FontWeight.w500,
+                        height: 1.35,
                         color: AppColors.darkText,
                       ),
                     ),
                   ),
-                ],
+                ),
               ),
             ),
           ),
@@ -1723,7 +1812,7 @@ class _FlmDialogShell extends StatelessWidget {
       width: 318,
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: surfaceFor(context),
+        color: panelFor(context),
         borderRadius: BorderRadius.circular(22),
         border: Border.all(color: lineColor(context)),
         boxShadow: const <BoxShadow>[

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:math';
 
+import 'package:audio_session/audio_session.dart';
 import 'package:flutter/widgets.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:path/path.dart' as p;
@@ -33,7 +34,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
           if (nextLine != _activeLine) _activeLine = nextLine;
         }
         if (_duration.inSeconds > 10 &&
-            (_duration - position).inSeconds <= 15) {
+            (_duration - position).inSeconds <= 45) {
           unawaited(_preloadNext());
         }
         _notify();
@@ -54,9 +55,13 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     service.onSkipNext = () => next();
     service.onSkipPrevious = () => previous();
     service.onCompleted = _handleCompleted;
+    service.onExternalPause = () {
+      _resumeOnForeground = false;
+    };
     sourceState.addListener(_onSourceChanged);
     WidgetsBinding.instance.addObserver(this);
     _progressTimer = Timer.periodic(const Duration(seconds: 5), (_) => _saveProgress());
+    unawaited(_listenToAudioSession());
     _restoreLastPlayback();
   }
 
@@ -90,6 +95,10 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   Timer? _settingsSaveTimer;
   bool _resumeOnForeground = false;
   int _autoSkips = 0;
+  bool _resumeAfterInterruption = false;
+  bool _appInForeground = true;
+  StreamSubscription<AudioInterruptionEvent>? _interruptionSubscription;
+  StreamSubscription<void>? _noisySubscription;
 
   List<Song> get queue => List<Song>.unmodifiable(_queue);
   int get index => _index;
@@ -115,6 +124,47 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   void _notify() {
     if (_disposed) return;
     notifyListeners();
+  }
+
+  /// iOS can interrupt or deactivate the audio session (calls, Siri, unplugged
+  /// headphones, locking a re-signed build). Without re-activating it,
+  /// `playing == true` can be reported while no sound is audible, which is the
+  /// "it says it is playing but the next track is silent" symptom.
+  Future<void> _listenToAudioSession() async {
+    try {
+      final session = await AudioSession.instance;
+      _interruptionSubscription = session.interruptionEventStream.listen((event) {
+        if (_disposed) return;
+        if (event.begin) {
+          _resumeAfterInterruption = _isPlaying;
+          if (_isPlaying) unawaited(service.pause());
+          return;
+        }
+        if (!_resumeAfterInterruption) return;
+        _resumeAfterInterruption = false;
+        if (event.type == AudioInterruptionType.pause ||
+            event.type == AudioInterruptionType.unknown) {
+          unawaited(() async {
+            await _activateSession();
+            if (!_disposed && _current != null && !_isPlaying) {
+              await service.play();
+            }
+          }());
+        }
+      });
+      _noisySubscription = session.becomingNoisyEventStream.listen((_) {
+        if (_isPlaying) unawaited(pause());
+      });
+    } catch (_) {
+      // Audio-session helpers are best effort; playback still works.
+    }
+  }
+
+  Future<void> _activateSession() async {
+    try {
+      final session = await AudioSession.instance;
+      await session.setActive(true);
+    } catch (_) {}
   }
 
   void _restoreLastPlayback() {
@@ -185,6 +235,10 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
         await service.playFile(song.localPath!, initialPosition: initialPosition);
       } else {
         final url = await _resolveUrl(song);
+        // A newer play request may have been issued while the URL was being
+        // resolved. Starting this stale track now would silently play the
+        // wrong song, so drop it.
+        if (token != _playToken || _disposed) return;
         await service.playUrl(url, initialPosition: initialPosition);
       }
       if (token != _playToken || _disposed) return;
@@ -225,7 +279,8 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       // All configured sources failed for this song: keep moving to the next
       // one instead of stalling, until either something plays or the whole
       // queue has failed a full round.
-      if (!song.isLocal &&
+      if (_appInForeground &&
+          !song.isLocal &&
           sourceState.hasActiveSource &&
           _queue.length > 1 &&
           _autoSkips < _queue.length) {
@@ -261,34 +316,49 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     return url;
   }
 
+  /// Resolve the next two tracks ahead of time. iOS suspends the WKWebView that
+  /// runs the source sandbox as soon as the app is backgrounded, so a URL that
+  /// has not been resolved *before* the screen locks can never be fetched until
+  /// the user returns. Preloading gives background playback a ready URL.
   Future<void> _preloadNext() async {
-    if (_queue.length < 2 || _current == null || !sourceState.hasActiveSource) return;
-    final nextIndex = _nextIndex(auto: true);
-    if (nextIndex < 0 || nextIndex >= _queue.length || nextIndex == _index) return;
-    final song = _queue[nextIndex];
-    if (song.isLocal || appState.isDisliked(song)) return;
-    final key = _songKey(song);
-    final cached = _urlCache[key];
-    if (cached != null && cached.expiresAt.isAfter(DateTime.now())) {
+    if (_queue.length < 2 || _current == null || !sourceState.hasActiveSource) {
       return;
     }
     final now = DateTime.now();
-    if (now.difference(_lastPreloadAttempt) < const Duration(seconds: 8)) return;
-    _lastPreloadAttempt = now;
-    if (!_preloading.add(key)) return;
-    try {
-      final resolved = await sourceState.resolveMusicUrlAutoSwitch(song);
-      final url = '${resolved['url'] ?? ''}';
-      if (url.isEmpty) return;
-      if (_urlCache.length > 30) _urlCache.clear();
-      _urlCache[key] = _CachedUrl(
-        url: url,
-        expiresAt: DateTime.now().add(const Duration(minutes: 10)),
-      );
-    } catch (_) {
-      // Preloading is best effort.
-    } finally {
-      _preloading.remove(key);
+    if (now.difference(_lastPreloadAttempt) < const Duration(seconds: 8)) {
+      return;
+    }
+
+    final first = _nextIndex(auto: true);
+    final second = first >= 0 ? _indexAfter(first, auto: true) : -1;
+    final candidates = <int>{
+      if (first >= 0) first,
+      if (second >= 0) second,
+    };
+
+    for (final index in candidates) {
+      if (index < 0 || index >= _queue.length || index == _index) continue;
+      final song = _queue[index];
+      if (song.isLocal || appState.isDisliked(song)) continue;
+      final key = _songKey(song);
+      final cached = _urlCache[key];
+      if (cached != null && cached.expiresAt.isAfter(now)) continue;
+      if (!_preloading.add(key)) continue;
+      _lastPreloadAttempt = now;
+      try {
+        final resolved = await sourceState.resolveMusicUrlAutoSwitch(song);
+        final url = '${resolved['url'] ?? ''}';
+        if (url.isEmpty) continue;
+        if (_urlCache.length > 30) _urlCache.clear();
+        _urlCache[key] = _CachedUrl(
+          url: url,
+          expiresAt: DateTime.now().add(const Duration(minutes: 10)),
+        );
+      } catch (_) {
+        // Preloading is best effort.
+      } finally {
+        _preloading.remove(key);
+      }
     }
   }
 
@@ -342,10 +412,15 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       await service.pause();
       return;
     }
-    if (service.player.processingState == ProcessingState.idle ||
-        service.player.processingState == ProcessingState.completed ||
+    final processing = service.player.processingState;
+    if (processing == ProcessingState.idle ||
+        processing == ProcessingState.completed ||
         _errorText != null) {
-      await _loadAndPlay(_current!, initialPosition: _position);
+      // A finished track reports its duration as the current position; start
+      // over from zero instead of reloading the final second.
+      final start =
+          processing == ProcessingState.completed ? Duration.zero : _position;
+      await _loadAndPlay(_current!, initialPosition: start);
     } else {
       await service.play();
     }
@@ -356,10 +431,13 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       await togglePlay();
       return;
     }
-    if (service.player.processingState == ProcessingState.idle ||
-        service.player.processingState == ProcessingState.completed ||
+    final processing = service.player.processingState;
+    if (processing == ProcessingState.idle ||
+        processing == ProcessingState.completed ||
         _errorText != null) {
-      await _loadAndPlay(_current!, initialPosition: _position);
+      final start =
+          processing == ProcessingState.completed ? Duration.zero : _position;
+      await _loadAndPlay(_current!, initialPosition: start);
     } else {
       await service.play();
     }
@@ -492,12 +570,12 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     unawaited(_loadAndPlay(song, initialPosition: _position));
   }
 
-  /// iOS suspends the app shortly after it is backgrounded or the screen locks,
-  /// which pauses the audio even though `UIBackgroundModes: audio` is set (most
-  /// visibly on a re-signed / free-provisioning build). When the user comes back
-  /// we resume automatically instead of forcing another tap on play. We only do
-  /// this if audio was actually playing when we left, so a deliberate pause is
-  /// never hijacked.
+  /// iOS suspends the app shortly after it is backgrounded or the screen locks.
+  /// The source sandbox is a WKWebView, and its JavaScript (and therefore every
+  /// URL resolution) freezes at that moment, while the native audio player
+  /// keeps running. When the user comes back we recover automatically instead
+  /// of forcing another tap on play. We only do this if playback (or a load)
+  /// was active when we left, so a deliberate pause is never hijacked.
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (_disposed) return;
@@ -505,23 +583,73 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       case AppLifecycleState.inactive:
       case AppLifecycleState.hidden:
       case AppLifecycleState.paused:
-        if (_isPlaying && !_loading) _resumeOnForeground = true;
+        _appInForeground = false;
+        if (_isPlaying || _loading) _resumeOnForeground = true;
+        // Persist immediately: iOS may kill a suspended app at any time.
+        if (_current != null) _saveProgress();
+        // Best effort — resolve upcoming URLs before the WebView freezes.
+        unawaited(_preloadNext());
         break;
       case AppLifecycleState.resumed:
+        _appInForeground = true;
         if (!_resumeOnForeground) return;
         _resumeOnForeground = false;
         final song = _current;
-        if (song == null || _isPlaying || _loading) return;
-        final processing = service.player.processingState;
-        if (processing == ProcessingState.idle ||
-            processing == ProcessingState.completed) {
-          unawaited(_loadAndPlay(song, initialPosition: _position));
-        } else {
-          unawaited(service.play());
-        }
+        if (song == null) return;
+        unawaited(_resumeAfterForeground(song));
         break;
       case AppLifecycleState.detached:
         break;
+    }
+  }
+
+  Future<void> _resumeAfterForeground(Song song) async {
+    await _activateSession();
+    if (_disposed) return;
+
+    // A load started while we were suspended is stuck waiting for the frozen
+    // WebView. Cancel it and restart now that JavaScript runs again.
+    if (_loading) {
+      _playToken++;
+      await _loadAndPlay(song, initialPosition: _position);
+      return;
+    }
+
+    final processing = service.player.processingState;
+    if (_errorText != null || processing == ProcessingState.idle) {
+      await _loadAndPlay(song, initialPosition: _position);
+      return;
+    }
+
+    // The track genuinely finished while we were away — continue the queue
+    // instead of replaying its final second.
+    if (processing == ProcessingState.completed) {
+      await _handleCompleted();
+      return;
+    }
+
+    if (!_isPlaying) {
+      await service.play();
+      return;
+    }
+
+    // The player *claims* to be playing, but after a lock/suspend the audio
+    // session may be inert — `playing` is true while the position never moves
+    // and no sound comes out (most visible when the next track started in the
+    // background). Sample the native position twice: a live player advances.
+    await Future<void>.delayed(const Duration(milliseconds: 400));
+    if (_disposed) return;
+    final first = service.player.position;
+    await Future<void>.delayed(const Duration(milliseconds: 450));
+    if (_disposed) return;
+    final second = service.player.position;
+    if (service.player.playing &&
+        !_loading &&
+        second <= first &&
+        service.player.processingState == ProcessingState.ready) {
+      await service.pause();
+      await _activateSession();
+      await service.play();
     }
   }
 
@@ -670,12 +798,15 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     _progressTimer.cancel();
     WidgetsBinding.instance.removeObserver(this);
     sourceState.removeListener(_onSourceChanged);
+    unawaited(_interruptionSubscription?.cancel() ?? Future<void>.value());
+    unawaited(_noisySubscription?.cancel() ?? Future<void>.value());
     for (final subscription in _subscriptions) {
       unawaited(subscription.cancel());
     }
     service.onSkipNext = null;
     service.onSkipPrevious = null;
     service.onCompleted = null;
+    service.onExternalPause = null;
     super.dispose();
   }
 }

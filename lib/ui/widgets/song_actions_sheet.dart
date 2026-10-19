@@ -222,6 +222,7 @@ Future<void> _showPlaylistPicker(
                   );
                   if (name == null || name.trim().isEmpty) return;
                   onNewPlaylist(name.trim());
+                  if (!context.mounted) return;
                   flmToast(context, '已创建「${name.trim()}」');
                 },
               ),

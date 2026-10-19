@@ -81,7 +81,7 @@ class LibraryTab extends StatelessWidget {
                 style: TextStyle(fontSize: 11.5, color: faintFor(context)),
               ),
             ),
-          SectionHead(title: '收藏与试听', note: '同步自本机'),
+          const SectionHead(title: '收藏与试听', note: '同步自本机'),
           _LibraryRow(
             icon: CupertinoIcons.music_note_list,
             accentIcon: true,
@@ -121,6 +121,7 @@ class LibraryTab extends StatelessWidget {
     );
     if (name == null || name.trim().isEmpty) return;
     library.createPlaylist(name.trim());
+    if (!context.mounted) return;
     flmToast(context, '已创建「${name.trim()}」');
   }
 
@@ -158,10 +159,9 @@ class LibraryTab extends StatelessWidget {
                   confirmLabel: '删除',
                   danger: true,
                 );
-                if (confirmed) {
-                  library.deletePlaylist(playlist.id);
-                  flmToast(context, '已删除「${playlist.name}」');
-                }
+                if (!confirmed || !context.mounted) return;
+                library.deletePlaylist(playlist.id);
+                flmToast(context, '已删除「${playlist.name}」');
               },
             ),
             const SizedBox(height: 8),
@@ -236,12 +236,12 @@ class _LocalMusicHero extends StatelessWidget {
         clipBehavior: Clip.antiAlias,
         child: Stack(
           children: <Widget>[
-            Positioned(
+            const Positioned(
               right: -48,
               top: -72,
               child: _HeroRing(size: 180),
             ),
-            Positioned(
+            const Positioned(
               right: -18,
               top: -38,
               child: _HeroRing(size: 110),

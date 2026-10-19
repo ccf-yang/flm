@@ -37,6 +37,8 @@ class AppSettings {
     this.searchSource = 'all',
     this.songlistSource = 'kw',
     this.leaderboardSource = 'kw',
+    this.miniPlayerX = -1,
+    this.miniPlayerY = -1,
   })  : searchHistory = searchHistory ?? <String>[],
         dislikedKeys = dislikedKeys ?? <String>[];
 
@@ -58,6 +60,10 @@ class AppSettings {
   String searchSource;
   String songlistSource;
   String leaderboardSource;
+  /// Draggable mini-player position, stored as a fraction (0..1) of the
+  /// usable area. Negative means "not set yet" (use the default corner).
+  double miniPlayerX;
+  double miniPlayerY;
 
   Song? get lastSong {
     final json = lastSongJson;
@@ -126,6 +132,8 @@ class AppSettings {
       searchSource: '${json['searchSource'] ?? 'all'}',
       songlistSource: '${json['songlistSource'] ?? 'kw'}',
       leaderboardSource: '${json['leaderboardSource'] ?? 'kw'}',
+      miniPlayerX: (json['miniPlayerX'] as num?)?.toDouble() ?? -1,
+      miniPlayerY: (json['miniPlayerY'] as num?)?.toDouble() ?? -1,
     );
   }
 
@@ -148,5 +156,7 @@ class AppSettings {
         'searchSource': searchSource,
         'songlistSource': songlistSource,
         'leaderboardSource': leaderboardSource,
+        'miniPlayerX': miniPlayerX,
+        'miniPlayerY': miniPlayerY,
       };
 }

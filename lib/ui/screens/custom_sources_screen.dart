@@ -18,7 +18,7 @@ class CustomSourcesScreen extends StatelessWidget {
     return Scaffold(
       body: Stack(
         children: <Widget>[
-          Positioned.fill(child: AuroraBackground(deep: true)),
+          const Positioned.fill(child: AuroraBackground(deep: true)),
           SafeArea(
             bottom: false,
             child: Column(
@@ -42,9 +42,9 @@ class CustomSourcesScreen extends StatelessWidget {
                     padding: const EdgeInsets.only(bottom: 40),
                     children: <Widget>[
                       if (state.loading || state.importing)
-                        Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: kGutter),
-                          child: const LinearProgressIndicator(minHeight: 2),
+                        const Padding(
+                          padding: EdgeInsets.symmetric(horizontal: kGutter),
+                          child: LinearProgressIndicator(minHeight: 2),
                         ),
                       _StatusCard(state: state),
                       SectionHead(title: '已导入的源', note: '${state.sources.length} 个'),

@@ -1,3 +1,5 @@
+import 'dart:ui' show ImageFilter;
+
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -54,11 +56,11 @@ class _RootShellState extends State<RootShell> {
               ],
             ),
           ),
-          // Floating now-playing pendant, resting just above the tab bar.
-          Positioned(
-            right: 16,
-            bottom: kTabBarHeight + MediaQuery.paddingOf(context).bottom + 12,
-            child: const MiniPlayer(),
+          // Floating now-playing pendant. It manages its own Positioned so the
+          // user can drag it anywhere (see MiniPlayer).
+          MiniPlayer(
+            bottomReserved:
+                kTabBarHeight + MediaQuery.paddingOf(context).bottom + 12,
           ),
           Positioned(
             left: 0,
@@ -111,52 +113,57 @@ class _AuroraTabBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-        color: surfaceFor(context),
-        border: Border(top: BorderSide(color: lineColor(context))),
-      ),
-      child: SafeArea(
-        top: false,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(12, 5, 12, 5),
-          child: Row(
-            children: List<Widget>.generate(_tabs.length, (i) {
-              final tab = _tabs[i];
-              final active = i == index;
-              return Expanded(
-                child: Pressable(
-                  onTap: () => onTap(i),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: <Widget>[
-                      Container(
-                        width: 56,
-                        height: 27,
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(999),
-                          color: active ? accentSoftColor(context) : Colors.transparent,
-                        ),
-                        child: Icon(
-                          tab['icon'] as IconData,
-                          size: 21,
-                          color: active ? accentFor(context) : faintFor(context),
-                        ),
+    return ClipRect(
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30),
+        child: Container(
+          decoration: BoxDecoration(
+            color: surfaceFor(context),
+            border: Border(top: BorderSide(color: lineColor(context))),
+          ),
+          child: SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 5, 12, 5),
+              child: Row(
+                children: List<Widget>.generate(_tabs.length, (i) {
+                  final tab = _tabs[i];
+                  final active = i == index;
+                  return Expanded(
+                    child: Pressable(
+                      onTap: () => onTap(i),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: <Widget>[
+                          Container(
+                            width: 42,
+                            height: 27,
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(999),
+                              color: active ? accentSoftColor(context) : Colors.transparent,
+                            ),
+                            child: Icon(
+                              tab['icon'] as IconData,
+                              size: 21,
+                              color: active ? accentFor(context) : faintFor(context),
+                            ),
+                          ),
+                          const SizedBox(height: 3),
+                          Text(
+                            tab['label'] as String,
+                            style: TextStyle(
+                              fontSize: 9,
+                              fontWeight: FontWeight.w600,
+                              color: active ? accentFor(context) : faintFor(context),
+                            ),
+                          ),
+                        ],
                       ),
-                      const SizedBox(height: 3),
-                      Text(
-                        tab['label'] as String,
-                        style: TextStyle(
-                          fontSize: 9,
-                          fontWeight: FontWeight.w600,
-                          color: active ? accentFor(context) : faintFor(context),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              );
-            }),
+                    ),
+                  );
+                }),
+              ),
+            ),
           ),
         ),
       ),

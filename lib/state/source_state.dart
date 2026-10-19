@@ -113,8 +113,12 @@ class SourceState extends ChangeNotifier {
       _evictIfNeeded(source.id);
       notifyListeners();
       // Give EngineHost one frame to mount the new off-screen web view before
-      // the page-load future below starts waiting for it.
-      await WidgetsBinding.instance.endOfFrame;
+      // the page-load future below starts waiting for it. When the app is
+      // backgrounded no frames are produced, so never wait indefinitely.
+      await WidgetsBinding.instance.endOfFrame.timeout(
+        const Duration(milliseconds: 600),
+        onTimeout: () {},
+      );
     }
     slot.lastUsed = DateTime.now();
 

@@ -157,8 +157,8 @@ class _DiscoverTabState extends State<DiscoverTab> {
               ),
             )
           else if (discover.songlists.isEmpty)
-            SliverToBoxAdapter(
-              child: const Padding(
+            const SliverToBoxAdapter(
+              child: Padding(
                 padding: EdgeInsets.only(top: 40),
                 child: EmptyState(
                   title: '暂时没有歌单',
@@ -219,7 +219,7 @@ class _DiscoverTabState extends State<DiscoverTab> {
                 ),
               ),
           ],
-          SliverToBoxAdapter(child: SizedBox(height: kRootChromeSpace)),
+          const SliverToBoxAdapter(child: SizedBox(height: kRootChromeSpace)),
         ],
       ),
     );

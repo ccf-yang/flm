@@ -130,7 +130,7 @@ class LeaderboardTab extends StatelessWidget {
               ),
             ),
           ],
-          SliverToBoxAdapter(child: SizedBox(height: kRootChromeSpace)),
+          const SliverToBoxAdapter(child: SizedBox(height: kRootChromeSpace)),
         ],
       ),
     );

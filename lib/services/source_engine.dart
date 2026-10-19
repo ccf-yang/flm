@@ -25,6 +25,8 @@ class SourceEngine {
             if (completer != null && !completer.isCompleted) completer.complete();
           },
           onWebResourceError: (error) {
+            // Ignore failed sub-resources; only the main document matters.
+            if (error.isForMainFrame != true) return;
             final completer = _pageReady;
             if (completer != null && !completer.isCompleted) {
               completer.completeError(StateError('自定义源引擎加载失败: ${error.description}'));
@@ -46,7 +48,9 @@ class SourceEngine {
 
   CustomSourceInfo? _current;
   SourceCapabilities _capabilities = SourceCapabilities.empty();
+  String? _script;
   bool _loaded = false;
+  Future<void>? _recovery;
 
   WebViewController get controller => _controller;
   CustomSourceInfo? get current => _current;
@@ -68,6 +72,7 @@ class SourceEngine {
     await _pageReady!.future.timeout(const Duration(seconds: 30));
 
     _current = info;
+    _script = script;
     _capabilities = SourceCapabilities.empty();
     for (final waiter in _requestWaiters.values) {
       if (!waiter.isCompleted) {
@@ -79,18 +84,28 @@ class SourceEngine {
     final initCompleter = Completer<SourceCapabilities>();
     _initCompleter = initCompleter;
 
-    await _controller.runJavaScript(
-      'FlmSource.prepare(${jsonEncode(<String, dynamic>{
-        'key': _key,
-        'id': info.id,
-        'name': info.name,
-        'description': info.description,
-        'version': info.version,
-        'author': info.author,
-        'homepage': info.homepage,
-        'script': script,
-      })});',
-    );
+    try {
+      await _controller.runJavaScript(
+        'FlmSource.prepare(${jsonEncode(<String, dynamic>{
+          'key': _key,
+          'id': info.id,
+          'name': info.name,
+          'description': info.description,
+          'version': info.version,
+          'author': info.author,
+          'homepage': info.homepage,
+          'script': script,
+        })});',
+      );
+    } catch (error) {
+      if (!initCompleter.isCompleted) {
+        initCompleter.completeError(StateError('自定义源环境准备失败: $error'));
+      }
+      return initCompleter.future.timeout(
+        const Duration(seconds: 25),
+        onTimeout: () => throw TimeoutException('自定义源初始化超时'),
+      );
+    }
 
     try {
       await _controller.runJavaScript(script);
@@ -156,11 +171,30 @@ class SourceEngine {
     );
   }
 
+  /// Reload the sandbox if a previous call timed out (a suspended or reclaimed
+  /// WKWebView never answers again until its page is recreated). Concurrent
+  /// requests share one recovery instead of reloading the page twice.
+  Future<void> _ensureReady() {
+    if (_loaded) return Future<void>.value();
+    return _recovery ??= _recover().whenComplete(() => _recovery = null);
+  }
+
+  Future<void> _recover() async {
+    final info = _current;
+    final script = _script;
+    if (info != null && script != null) {
+      await activate(info, script);
+    } else {
+      await load();
+    }
+  }
+
   Future<Map<String, dynamic>> _requestAction({
     required String source,
     required String action,
     required Map<String, dynamic> info,
   }) async {
+    await _ensureReady();
     final currentInfo = _current;
     if (currentInfo == null) throw StateError('尚未启用自定义源');
     if (!_capabilities.supports(source, action)) {
@@ -180,17 +214,22 @@ class SourceEngine {
       },
     };
 
-    await _controller.runJavaScript(
-      '__lx_native__(${jsonEncode(_key)}, \'request\', ${jsonEncode(jsonEncode(payload))});',
-    );
+    try {
+      await _controller.runJavaScript(
+        '__lx_native__(${jsonEncode(_key)}, \'request\', ${jsonEncode(jsonEncode(payload))});',
+      );
+    } catch (error) {
+      _requestWaiters.remove(requestKey);
+      throw StateError('自定义源请求发送失败: $error');
+    }
 
-    return completer.future.timeout(
-      const Duration(seconds: 30),
-      onTimeout: () {
-        _requestWaiters.remove(requestKey);
-        throw TimeoutException('自定义源响应超时');
-      },
-    );
+    try {
+      return await completer.future.timeout(const Duration(seconds: 30));
+    } on TimeoutException {
+      _requestWaiters.remove(requestKey);
+      _loaded = false;
+      throw TimeoutException('自定义源响应超时');
+    }
   }
 
   Future<void> _onMessage(JavaScriptMessage message) async {

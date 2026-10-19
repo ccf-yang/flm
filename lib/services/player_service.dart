@@ -14,7 +14,12 @@ class FlmAudioHandler extends BaseAudioHandler {
   Future<void> play() => _service.play();
 
   @override
-  Future<void> pause() => _service.pause();
+  Future<void> pause() {
+    // A pause coming from the lock screen / control centre is deliberate; it
+    // must cancel any automatic resume-on-foreground.
+    _service.onExternalPause?.call();
+    return _service.pause();
+  }
 
   @override
   Future<void> stop() async {
@@ -78,6 +83,7 @@ class FlmPlayerService {
   Future<void> Function()? onSkipNext;
   Future<void> Function()? onSkipPrevious;
   Future<void> Function()? onCompleted;
+  void Function()? onExternalPause;
 
   AudioPlayer get player => _player;
   FlmAudioHandler get handler => _handler;

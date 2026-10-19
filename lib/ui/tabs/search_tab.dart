@@ -132,7 +132,7 @@ class _SearchTabState extends State<SearchTab> {
           ),
         ),
         SliverPadding(
-          padding: EdgeInsets.fromLTRB(kGutter, 16, kGutter, 0),
+          padding: const EdgeInsets.fromLTRB(kGutter, 16, kGutter, 0),
           sliver: SliverToBoxAdapter(
             child: SearchField(
               controller: _controller,
@@ -152,11 +152,11 @@ class _SearchTabState extends State<SearchTab> {
         ),
         if (search.tips.isNotEmpty && _controller.text.trim().isNotEmpty)
           SliverPadding(
-            padding: EdgeInsets.fromLTRB(kGutter, 10, kGutter, 0),
+            padding: const EdgeInsets.fromLTRB(kGutter, 10, kGutter, 0),
             sliver: SliverToBoxAdapter(child: _suggestCard(context, search)),
           ),
         SliverPadding(
-          padding: EdgeInsets.fromLTRB(kGutter, 14, kGutter, 0),
+          padding: const EdgeInsets.fromLTRB(kGutter, 14, kGutter, 0),
           sliver: SliverToBoxAdapter(
             child: AuroraSegmented(
               items: const <String>['歌曲', '歌单'],
@@ -186,7 +186,7 @@ class _SearchTabState extends State<SearchTab> {
             ),
           ),
           SliverPadding(
-            padding: EdgeInsets.fromLTRB(kGutter, 0, kGutter, 0),
+            padding: const EdgeInsets.fromLTRB(kGutter, 0, kGutter, 0),
             sliver: SliverToBoxAdapter(
               child: Wrap(
                 spacing: 8,
@@ -202,7 +202,7 @@ class _SearchTabState extends State<SearchTab> {
             ),
           ),
         ],
-        SliverToBoxAdapter(child: SizedBox(height: kRootChromeSpace)),
+        const SliverToBoxAdapter(child: SizedBox(height: kRootChromeSpace)),
       ],
     );
   }
@@ -287,7 +287,7 @@ class _SearchTabState extends State<SearchTab> {
       );
     } else if (search.type == SearchType.music) {
       body = musicCount == 0
-          ? EmptyState(
+          ? const EmptyState(
               title: '没有找到歌曲',
               message: '换个关键词，或试试其他平台',
               icon: CupertinoIcons.music_note,
@@ -321,7 +321,7 @@ class _SearchTabState extends State<SearchTab> {
             );
     } else {
       body = listCount == 0
-          ? EmptyState(
+          ? const EmptyState(
               title: '没有找到歌单',
               message: '换个关键词，或试试其他平台',
               icon: CupertinoIcons.music_albums,
@@ -397,7 +397,7 @@ class _SearchTabState extends State<SearchTab> {
             ),
           ),
           Padding(
-            padding: EdgeInsets.fromLTRB(kGutter, 16, kGutter, 0),
+            padding: const EdgeInsets.fromLTRB(kGutter, 16, kGutter, 0),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[

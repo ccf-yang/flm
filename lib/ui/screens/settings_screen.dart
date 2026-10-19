@@ -29,7 +29,7 @@ class SettingsScreen extends StatelessWidget {
     return Scaffold(
       body: Stack(
         children: <Widget>[
-          Positioned.fill(child: AuroraBackground(deep: true)),
+          const Positioned.fill(child: AuroraBackground(deep: true)),
           SafeArea(
             bottom: false,
             child: Column(
@@ -46,7 +46,7 @@ class SettingsScreen extends StatelessWidget {
                     padding: const EdgeInsets.fromLTRB(kGutter, 4, kGutter, 40),
                     children: <Widget>[
                       _IntroCard(),
-                      SectionHead(title: '外观'),
+                      const SectionHead(title: '外观'),
                       _Group(
                         children: <Widget>[
                           _SettingRow(
@@ -69,7 +69,7 @@ class SettingsScreen extends StatelessWidget {
                           ),
                         ],
                       ),
-                      SectionHead(title: '播放'),
+                      const SectionHead(title: '播放'),
                       _Group(
                         children: <Widget>[
                           _SettingRow(
@@ -169,7 +169,7 @@ class SettingsScreen extends StatelessWidget {
                           ),
                         ],
                       ),
-                      SectionHead(title: '数据'),
+                      const SectionHead(title: '数据'),
                       _Group(
                         children: <Widget>[
                           _SettingRow(
@@ -191,7 +191,7 @@ class SettingsScreen extends StatelessWidget {
                           ),
                         ],
                       ),
-                      SectionHead(title: '音源'),
+                      const SectionHead(title: '音源'),
                       _Group(
                         children: <Widget>[
                           _SettingRow(
@@ -336,7 +336,7 @@ class _IntroCard extends StatelessWidget {
       padding: const EdgeInsets.only(top: 8, bottom: 8),
       child: Row(
         children: <Widget>[
-          GradientArt(seed: 'flm-about', radius: 18, width: 56, height: 56, decorate: true),
+          const GradientArt(seed: 'flm-about', radius: 18, width: 56, height: 56, decorate: true),
           const SizedBox(width: 14),
           Expanded(
             child: Column(

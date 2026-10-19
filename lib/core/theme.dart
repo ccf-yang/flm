@@ -8,6 +8,8 @@ class AppColors {
   static const darkBg = Color(0xFF07090C);
   static const darkBgDeep = Color(0xFF040507);
   static const darkSurface = Color(0xFF12171D);
+  /// Matches `--surface: rgba(18, 23, 29, .72)` in the ui.html study.
+  static const darkSurfaceGlass = Color(0xB812171D);
   static const darkSurface2 = Color(0xFF171D24);
   static const darkSurface3 = Color(0xFF1F2730);
   static const darkText = Color(0xFFF3F6F4);
@@ -20,6 +22,8 @@ class AppColors {
   static const lightBg = Color(0xFFF3F5F1);
   static const lightBgDeep = Color(0xFFE9ECE6);
   static const lightSurface = Color(0xFFFFFFFF);
+  /// Matches `--surface: rgba(255, 255, 255, .76)` in the ui.html study.
+  static const lightSurfaceGlass = Color(0xC2FFFFFF);
   static const lightSurface2 = Color(0xFFECEFE9);
   static const lightSurface3 = Color(0xFFE1E5DE);
   static const lightText = Color(0xFF101511);
@@ -70,7 +74,15 @@ Color bgFor(BuildContext context) =>
 Color bgDeepFor(BuildContext context) =>
     auroraIsDark(context) ? AppColors.darkBgDeep : AppColors.lightBgDeep;
 
-Color surfaceFor(BuildContext context) =>
+/// The frosted "surface" from the design study. Use it for chrome that should
+/// blend into the aurora (cards, chips, tab bar, floating controls).
+Color surfaceFor(BuildContext context) => auroraIsDark(context)
+    ? AppColors.darkSurfaceGlass
+    : AppColors.lightSurfaceGlass;
+
+/// Opaque card color (`--surface-solid`): sheets, dialogs and segmented
+/// controls sit above other content, so they must not show it through.
+Color panelFor(BuildContext context) =>
     auroraIsDark(context) ? AppColors.darkSurface : AppColors.lightSurface;
 
 Color surface2For(BuildContext context) => auroraIsDark(context)
@@ -143,6 +155,11 @@ ThemeData buildAppTheme(Brightness brightness) {
     highlightColor: accentSoftColor0(accent),
     visualDensity: VisualDensity.standard,
     dividerColor: isDark ? AppColors.darkLine : AppColors.lightLine,
+    textSelectionTheme: TextSelectionThemeData(
+      cursorColor: accent,
+      selectionColor: accentSoftColor0(accent),
+      selectionHandleColor: accent,
+    ),
     textTheme: TextTheme(
       titleLarge: TextStyle(
         fontSize: 21,

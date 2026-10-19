@@ -513,14 +513,14 @@ class _SeekBar extends StatelessWidget {
       child: Column(
         children: <Widget>[
           SliderTheme(
-            data: SliderThemeData(
+            data: const SliderThemeData(
               trackHeight: 3,
               activeTrackColor: AppColors.accentDark,
-              inactiveTrackColor: const Color(0x29FFFFFF),
+              inactiveTrackColor: Color(0x29FFFFFF),
               thumbColor: Colors.white,
-              overlayColor: const Color(0x149AF4D2),
-              trackShape: const RectangularSliderTrackShape(),
-              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+              overlayColor: Color(0x149AF4D2),
+              trackShape: RectangularSliderTrackShape(),
+              thumbShape: RoundSliderThumbShape(enabledThumbRadius: 6),
             ),
             child: Slider(
               value: value,
@@ -606,14 +606,14 @@ class _Controls extends StatelessWidget {
             child: Container(
               width: 66,
               height: 66,
-              decoration: BoxDecoration(
+              decoration: const BoxDecoration(
                 shape: BoxShape.circle,
-                gradient: const LinearGradient(
+                gradient: LinearGradient(
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
                   colors: <Color>[Color(0xFF9AF4D2), Color(0xFF61E6B8)],
                 ),
-                boxShadow: const <BoxShadow>[
+                boxShadow: <BoxShadow>[
                   BoxShadow(
                     color: Color(0x4D61E6B8),
                     blurRadius: 34,
@@ -730,10 +730,10 @@ void _showQueueSheet(BuildContext context) {
         final player = context.watch<PlayerController>();
         return Text(
           '${player.queue.length} 首',
-          style: const TextStyle(
+          style: TextStyle(
             fontSize: 11,
             fontWeight: FontWeight.w600,
-            color: AppColors.darkText2,
+            color: mutedFor(sheetContext),
           ),
         );
       },
@@ -789,10 +789,10 @@ void _showQueueSheet(BuildContext context) {
                               : Text(
                                   '${index + 1}',
                                   textAlign: TextAlign.center,
-                                  style: const TextStyle(
+                                  style: TextStyle(
                                     fontSize: 10,
                                     fontWeight: FontWeight.w600,
-                                    color: AppColors.darkText3,
+                                    color: faintFor(context),
                                   ),
                                 ),
                         ),
@@ -820,9 +820,9 @@ void _showQueueSheet(BuildContext context) {
                                 song.displaySinger,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
+                                style: TextStyle(
                                   fontSize: 10,
-                                  color: AppColors.darkText3,
+                                  color: faintFor(context),
                                 ),
                               ),
                             ],
@@ -831,13 +831,13 @@ void _showQueueSheet(BuildContext context) {
                         const SizedBox(width: 6),
                         Pressable(
                           onTap: () => player.removeFromQueue(song),
-                          child: const SizedBox(
+                          child: SizedBox(
                             width: 30,
                             height: 30,
                             child: Icon(
                               CupertinoIcons.xmark_circle_fill,
                               size: 15,
-                              color: AppColors.darkText3,
+                              color: faintFor(context),
                             ),
                           ),
                         ),
@@ -873,9 +873,9 @@ void _showSleepSheet(BuildContext context) {
                     remaining == null
                         ? '选择时长后，播放会在倒计时结束时停止。'
                         : '当前剩余 ${formatDuration(remaining)}',
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 11,
-                      color: AppColors.darkText2,
+                      color: mutedFor(context),
                     ),
                   ),
                 ),
@@ -950,10 +950,10 @@ void _showPlaybackSheet(BuildContext context) {
                         child: Text(
                           '${(volume * 100).round()}%',
                           textAlign: TextAlign.right,
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 11.5,
                             fontWeight: FontWeight.w600,
-                            color: AppColors.darkText2,
+                            color: mutedFor(context),
                           ),
                         ),
                       ),
@@ -979,10 +979,10 @@ void _showPlaybackSheet(BuildContext context) {
                         child: Text(
                           '${speed.toStringAsFixed(2)}x',
                           textAlign: TextAlign.right,
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 11.5,
                             fontWeight: FontWeight.w600,
-                            color: AppColors.darkText2,
+                            color: mutedFor(context),
                           ),
                         ),
                       ),

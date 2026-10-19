@@ -101,7 +101,7 @@ class _SonglistDetailScreenState extends State<SonglistDetailScreen> {
     return Scaffold(
       body: Stack(
         children: <Widget>[
-          Positioned.fill(child: AuroraBackground(deep: true)),
+          const Positioned.fill(child: AuroraBackground(deep: true)),
           if (widget.coverUrl.isNotEmpty)
             Positioned.fill(
               child: Opacity(

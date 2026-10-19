@@ -12,6 +12,7 @@ class LibraryRepository {
 
   final File _file;
   final List<Playlist> playlists;
+  Future<void> _saveChain = Future<void>.value();
 
   static Future<LibraryRepository> load() async {
     final dir = await getApplicationSupportDirectory();
@@ -136,7 +137,15 @@ class LibraryRepository {
 
   bool isLoved(Song song) => lovePlaylist.contains(song);
 
-  Future<void> save() async {
+  /// Serialize writes (favorites, downloads and bulk imports all save without
+  /// awaiting, and a shared `.tmp` file would race).
+  Future<void> save() {
+    final task = _saveChain.then((_) => _writeSnapshot());
+    _saveChain = task.then<void>((_) {}, onError: (_) {});
+    return task;
+  }
+
+  Future<void> _writeSnapshot() async {
     final data = playlists.map((playlist) => playlist.toJson()).toList();
     final temp = File('${_file.path}.tmp');
     await temp.writeAsString(jsonEncode(data), flush: true);

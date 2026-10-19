@@ -11,6 +11,7 @@ class SettingsRepository {
 
   final File _file;
   AppSettings settings;
+  Future<void> _saveChain = Future<void>.value();
 
   static Future<SettingsRepository> load() async {
     final dir = await getApplicationSupportDirectory();
@@ -32,7 +33,16 @@ class SettingsRepository {
     return SettingsRepository._(file, settings);
   }
 
-  Future<void> save() async {
+  /// Serialize writes. Progress, drag position and settings changes can all
+  /// ask for a save at once; two writers sharing the same `.tmp` path would
+  /// otherwise race and one rename would fail.
+  Future<void> save() {
+    final task = _saveChain.then((_) => _writeSnapshot());
+    _saveChain = task.then<void>((_) {}, onError: (_) {});
+    return task;
+  }
+
+  Future<void> _writeSnapshot() async {
     final temp = File('${_file.path}.tmp');
     await temp.writeAsString(jsonEncode(settings.toJson()), flush: true);
     await temp.rename(_file.path);

@@ -42,7 +42,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
       return Scaffold(
         body: Stack(
           children: <Widget>[
-            Positioned.fill(child: AuroraBackground(deep: true)),
+            const Positioned.fill(child: AuroraBackground(deep: true)),
             const Positioned.fill(
               child: EmptyState(title: '列表不存在', icon: CupertinoIcons.music_note_list),
             ),
@@ -70,7 +70,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     return Scaffold(
       body: Stack(
         children: <Widget>[
-          Positioned.fill(child: AuroraBackground(deep: true)),
+          const Positioned.fill(child: AuroraBackground(deep: true)),
           SafeArea(
             bottom: false,
             child: Column(
@@ -257,7 +257,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   Widget _buildReorderList(Playlist playlist, LibraryState library) {
     return ReorderableListView.builder(
       buildDefaultDragHandles: false,
-      padding: EdgeInsets.fromLTRB(kGutter, 6, kGutter, 28),
+      padding: const EdgeInsets.fromLTRB(kGutter, 6, kGutter, 28),
       itemCount: playlist.songs.length,
       // Flutter 3.41 deprecates onReorder in favour of onReorderItem; keeping
       // onReorder keeps compatibility with older Flutter 3.2x SDKs.
@@ -580,7 +580,7 @@ class _PlaylistHero extends StatelessWidget {
   Widget build(BuildContext context) {
     final empty = playlist.songs.isEmpty;
     return Padding(
-      padding: EdgeInsets.fromLTRB(kGutter, 8, kGutter, 12),
+      padding: const EdgeInsets.fromLTRB(kGutter, 8, kGutter, 12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
@@ -626,7 +626,7 @@ class _PlaylistHero extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: <Widget>[
-                    Overline('PLAYLIST'),
+                    const Overline('PLAYLIST'),
                     const SizedBox(height: 6),
                     Text(
                       playlist.name,

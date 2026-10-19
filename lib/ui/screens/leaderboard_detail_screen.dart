@@ -94,7 +94,7 @@ class _LeaderboardDetailScreenState extends State<LeaderboardDetailScreen> {
     return Scaffold(
       body: Stack(
         children: <Widget>[
-          Positioned.fill(child: AuroraBackground(deep: true)),
+          const Positioned.fill(child: AuroraBackground(deep: true)),
           if (widget.coverUrl.isNotEmpty)
             Positioned.fill(
               child: Opacity(

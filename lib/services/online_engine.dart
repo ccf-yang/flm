@@ -22,6 +22,9 @@ class OnlineEngine {
             if (!_ready.isCompleted) _ready.complete();
           },
           onWebResourceError: (error) {
+            // Sub-resource failures (fonts, favicons, source maps) must not
+            // abort engine startup; only a failed main document is fatal.
+            if (error.isForMainFrame != true) return;
             if (!_ready.isCompleted) {
               _ready.completeError(StateError('在线引擎加载失败: ${error.description}'));
             }
@@ -91,13 +94,21 @@ class OnlineEngine {
       final detail = _lastJsError == null ? '' : ' ($_lastJsError)';
       throw StateError('在线引擎执行失败: $error$detail');
     }
-    return completer.future.timeout(
-      const Duration(seconds: 35),
-      onTimeout: () {
-        _pending.remove(id);
-        throw TimeoutException('在线请求超时');
-      },
-    );
+    try {
+      return await completer.future.timeout(const Duration(seconds: 35));
+    } on TimeoutException {
+      _pending.remove(id);
+      // A timeout usually means the WKWebView was suspended in the background
+      // or its content process was reclaimed by iOS. Force a reload on the
+      // next call instead of silently timing out forever.
+      _markStale();
+      throw TimeoutException('在线请求超时');
+    }
+  }
+
+  void _markStale() {
+    _loaded = false;
+    _loadFuture = null;
   }
 
   Future<void> _onMessage(JavaScriptMessage message) async {

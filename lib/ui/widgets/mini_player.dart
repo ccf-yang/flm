@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui' show ImageFilter;
 
@@ -5,101 +6,270 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/theme.dart';
+import '../../models/song.dart';
+import '../../state/app_state.dart';
 import '../../state/player_state.dart';
-import '../kit.dart';
 import '../screens/player_screen.dart';
 import 'cover_art.dart';
 
-/// Floating "now playing" pendant that sits just above the tab bar. A small
-/// semi-transparent glass disc with a progress ring around the current cover,
-/// so it blends into the aurora instead of blocking the view like a bar did.
-/// Tapping it opens the full player page.
-class MiniPlayer extends StatelessWidget {
-  const MiniPlayer({super.key});
+/// Draggable "now playing" pendant, floating above the tab bar.
+///
+/// It is a frosted glass disc with a progress ring around the current cover.
+/// Drag it anywhere (the position is persisted as a fraction of the usable
+/// area, so it survives rotation and app restarts); tap it to open the full
+/// player with a soft slide-up transition.
+class MiniPlayer extends StatefulWidget {
+  const MiniPlayer({super.key, required this.bottomReserved});
 
-  static const double diameter = 58;
+  /// Vertical space that stays untouchable at the bottom of the root screen
+  /// (tab bar + safe area + gap), so the pendant never covers the tabs.
+  final double bottomReserved;
+
+  static const double diameter = 60;
+
+  @override
+  State<MiniPlayer> createState() => _MiniPlayerState();
+}
+
+class _MiniPlayerState extends State<MiniPlayer> {
+  static const double _edge = 12;
+  static const double _topGap = 8;
+
+  Offset? _offset;
+  bool _dragging = false;
+  bool _pressed = false;
+
+  void _openPlayer() {
+    Navigator.of(context).push(
+      PageRouteBuilder<void>(
+        transitionDuration: const Duration(milliseconds: 320),
+        reverseTransitionDuration: const Duration(milliseconds: 260),
+        pageBuilder: (_, __, ___) => const PlayerScreen(),
+        transitionsBuilder: (_, animation, __, child) {
+          final curved = CurvedAnimation(
+            parent: animation,
+            curve: AuroraMotion.ease,
+          );
+          return FadeTransition(
+            opacity: curved,
+            child: SlideTransition(
+              position: Tween<Offset>(
+                begin: const Offset(0, 0.035),
+                end: Offset.zero,
+              ).animate(curved),
+              child: child,
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  void _persist(Offset position, Rect bounds) {
+    final appState = context.read<AppState>();
+    final spanX = math.max(1.0, bounds.right - bounds.left);
+    final spanY = math.max(1.0, bounds.bottom - bounds.top);
+    appState.settings.miniPlayerX =
+        ((position.dx - bounds.left) / spanX).clamp(0.0, 1.0).toDouble();
+    appState.settings.miniPlayerY =
+        ((position.dy - bounds.top) / spanY).clamp(0.0, 1.0).toDouble();
+    unawaited(appState.repository.save());
+  }
 
   @override
   Widget build(BuildContext context) {
     final player = context.watch<PlayerController>();
     final song = player.current;
-    if (song == null) return const SizedBox.shrink();
+    if (song == null) {
+      return const Positioned(left: 0, top: 0, child: SizedBox.shrink());
+    }
 
+    final media = MediaQuery.of(context);
+    const diameter = MiniPlayer.diameter;
+    final bounds = Rect.fromLTRB(
+      _edge,
+      media.padding.top + _topGap,
+      media.size.width - _edge - diameter,
+      media.size.height - widget.bottomReserved - diameter,
+    );
+    if (bounds.right < bounds.left || bounds.bottom < bounds.top) {
+      return const Positioned(left: 0, top: 0, child: SizedBox.shrink());
+    }
+
+    final settings = context.read<AppState>().settings;
+    final storedX = settings.miniPlayerX;
+    final storedY = settings.miniPlayerY;
+    final stored = storedX >= 0 && storedY >= 0
+        ? Offset(
+            bounds.left + storedX * (bounds.right - bounds.left),
+            bounds.top + storedY * (bounds.bottom - bounds.top),
+          )
+        : null;
+    final base = _offset ?? stored ?? Offset(bounds.right, bounds.bottom);
+    final position = Offset(
+      base.dx.clamp(bounds.left, bounds.right).toDouble(),
+      base.dy.clamp(bounds.top, bounds.bottom).toDouble(),
+    );
+
+    return AnimatedPositioned(
+      duration: _dragging ? Duration.zero : AuroraMotion.base,
+      curve: AuroraMotion.spring,
+      left: position.dx,
+      top: position.dy,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: _openPlayer,
+        onTapDown: (_) => setState(() => _pressed = true),
+        onTapUp: (_) => setState(() => _pressed = false),
+        onTapCancel: () => setState(() => _pressed = false),
+        onPanStart: (_) {
+          setState(() {
+            _dragging = true;
+            _pressed = false;
+            _offset = position;
+          });
+        },
+        onPanUpdate: (details) {
+          final next = (_offset ?? position) + details.delta;
+          setState(() {
+            _offset = Offset(
+              next.dx.clamp(bounds.left, bounds.right).toDouble(),
+              next.dy.clamp(bounds.top, bounds.bottom).toDouble(),
+            );
+          });
+        },
+        onPanEnd: (_) {
+          final resting = _offset ?? position;
+          setState(() => _dragging = false);
+          _persist(resting, bounds);
+        },
+        onPanCancel: () {
+          setState(() => _dragging = false);
+        },
+        child: AnimatedScale(
+          duration: const Duration(milliseconds: 160),
+          curve: AuroraMotion.spring,
+          scale: _dragging ? 1.06 : (_pressed ? 0.95 : 1),
+          child: _GlassPendant(song: song, player: player),
+        ),
+      ),
+    );
+  }
+}
+
+class _GlassPendant extends StatelessWidget {
+  const _GlassPendant({required this.song, required this.player});
+
+  final Song song;
+  final PlayerController player;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = auroraIsDark(context);
+    const diameter = MiniPlayer.diameter;
     final durationMs = player.duration.inMilliseconds;
     final progress = durationMs > 0
         ? (player.position.inMilliseconds / durationMs).clamp(0.0, 1.0).toDouble()
         : 0.0;
-    final ringColor = player.errorText != null
-        ? coralFor(context)
-        : accentFor(context);
+    final ringColor =
+        player.errorText != null ? coralFor(context) : accentFor(context);
 
-    return Pressable(
-      onTap: () {
-        Navigator.of(context).push(
-          MaterialPageRoute<void>(
-            builder: (_) => const PlayerScreen(),
+    return SizedBox(
+      width: diameter,
+      height: diameter,
+      child: Stack(
+        alignment: Alignment.center,
+        children: <Widget>[
+          // Drop shadow, painted outside the clipped glass so it stays visible.
+          Positioned.fill(
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                boxShadow: <BoxShadow>[
+                  BoxShadow(
+                    color: player.isPlaying
+                        ? accentFor(context).withValues(alpha: 0.22)
+                        : Colors.black.withValues(
+                            alpha: isDark ? 0.34 : 0.16,
+                          ),
+                    blurRadius: player.isPlaying ? 30 : 24,
+                    offset: const Offset(0, 10),
+                  ),
+                ],
+              ),
+              child: const SizedBox.expand(),
+            ),
           ),
-        );
-      },
-      child: SizedBox(
-        width: diameter,
-        height: diameter,
-        child: Stack(
-          alignment: Alignment.center,
-          children: <Widget>[
-            // Drop shadow, painted outside the clipped glass so it stays visible.
-            Positioned.fill(
-              child: DecoratedBox(
+          // Frosted glass disc (`backdrop-filter: blur(26px)` in the study).
+          ClipOval(
+            child: BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: 26, sigmaY: 26),
+              child: Container(
+                width: diameter,
+                height: diameter,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  boxShadow: <BoxShadow>[
-                    BoxShadow(
-                      color: Colors.black.withValues(
-                        alpha: auroraIsDark(context) ? 0.30 : 0.16,
-                      ),
-                      blurRadius: 22,
-                      offset: const Offset(0, 8),
-                    ),
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: isDark
+                        ? <Color>[
+                            const Color(0x26FFFFFF),
+                            surfaceFor(context),
+                            const Color(0x0DFFFFFF),
+                          ]
+                        : <Color>[
+                            const Color(0xF2FFFFFF),
+                            surfaceFor(context),
+                            const Color(0xB3FFFFFF),
+                          ],
+                    stops: const <double>[0, 0.55, 1],
+                  ),
+                  border: Border.all(color: lineStrongColor(context)),
+                ),
+              ),
+            ),
+          ),
+          // Glass rim highlight.
+          Positioned(
+            left: diameter * 0.18,
+            right: diameter * 0.18,
+            top: 4,
+            child: Container(
+              height: 1,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(999),
+                gradient: LinearGradient(
+                  colors: <Color>[
+                    Colors.transparent,
+                    Colors.white.withValues(alpha: 0.35),
+                    Colors.transparent,
                   ],
                 ),
-                child: const SizedBox.expand(),
               ),
             ),
-            // Frosted glass disc.
-            ClipOval(
-              child: BackdropFilter(
-                filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-                child: Container(
-                  width: diameter,
-                  height: diameter,
-                  color: surfaceFor(context).withValues(
-                    alpha: auroraIsDark(context) ? 0.55 : 0.62,
-                  ),
-                ),
-              ),
-            ),
-            CoverArt(song: song, size: 42, radius: 21),
-            // Progress ring (or a spinner while the URL is being fetched).
-            Positioned.fill(
-              child: player.loading
-                  ? Padding(
-                      padding: const EdgeInsets.all(2),
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2.4,
-                        color: ringColor,
-                      ),
-                    )
-                  : CustomPaint(
-                      painter: _RingPainter(
-                        progress: progress,
-                        color: ringColor,
-                        trackColor: lineColor(context),
-                        thickness: 3,
-                      ),
+          ),
+          CoverArt(song: song, size: 44, radius: 22),
+          // Progress ring (or a spinner while the URL is being fetched).
+          Positioned.fill(
+            child: player.loading
+                ? Padding(
+                    padding: const EdgeInsets.all(1.5),
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2.4,
+                      color: ringColor,
                     ),
-            ),
-          ],
-        ),
+                  )
+                : CustomPaint(
+                    painter: _RingPainter(
+                      progress: progress,
+                      color: ringColor,
+                      trackColor: lineColor(context),
+                      thickness: 2.4,
+                    ),
+                  ),
+          ),
+        ],
       ),
     );
   }
