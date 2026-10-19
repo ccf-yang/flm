@@ -15,6 +15,9 @@ class CustomSourcesScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final state = context.watch<SourceState>();
     final activeId = state.active?.id;
+    final onlineCount = state.sources
+        .where((source) => (source.importUrl ?? '').trim().isNotEmpty)
+        .length;
     return Scaffold(
       body: Stack(
         children: <Widget>[
@@ -30,6 +33,13 @@ class CustomSourcesScreen extends StatelessWidget {
                   ),
                   title: '自定义源',
                   trailing: <Widget>[
+                    if (onlineCount > 0)
+                      IconBtn(
+                        icon: CupertinoIcons.arrow_clockwise,
+                        tooltip: '刷新全部在线源',
+                        onTap:
+                            state.importing ? null : () => _updateAll(context, state),
+                      ),
                     IconBtn(
                       icon: CupertinoIcons.plus,
                       tooltip: '导入脚本',
@@ -209,6 +219,34 @@ class CustomSourcesScreen extends StatelessWidget {
     }
   }
 
+  Future<void> _updateAll(BuildContext context, SourceState state) async {
+    final confirmed = await flmConfirmDialog(
+      context,
+      title: '刷新全部在线源',
+      message: '按各自保存的原始 URL 重新下载脚本，并清掉旧引擎缓存重新加载。'
+          '本地导入、没有记录 URL 的源会被跳过。',
+      confirmLabel: '开始刷新',
+    );
+    if (!confirmed) return;
+    if (!context.mounted) return;
+    flmToast(context, '正在刷新在线源…');
+    final result = await state.updateAllFromUrls();
+    if (!context.mounted) return;
+    if (result.failed.isEmpty) {
+      flmToast(
+        context,
+        result.skipped > 0
+            ? '已更新 ${result.updated} 个源，${result.skipped} 个本地源无 URL 已跳过'
+            : '已更新 ${result.updated} 个源',
+      );
+    } else {
+      flmToast(
+        context,
+        '已更新 ${result.updated} 个，失败 ${result.failed.length} 个：${result.failed.first}',
+      );
+    }
+  }
+
   Future<void> _delete(
     BuildContext context,
     SourceState state,
@@ -248,7 +286,7 @@ class _SourceRow extends StatelessWidget {
       if (source.version.isNotEmpty) 'v${source.version}',
       if (source.author.isNotEmpty) source.author,
       if (source.createdAt > 0) _date(source.createdAt),
-      if (source.importUrl != null) '在线源',
+      if (source.importUrl != null) '在线源' else '本地导入',
     ];
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),

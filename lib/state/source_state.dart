@@ -312,6 +312,64 @@ class SourceState extends ChangeNotifier {
     return script;
   }
 
+  /// One-tap refresh of every source that remembers the URL it came from.
+  /// Locally imported scripts have nothing to re-fetch and are counted as
+  /// skipped. Each refreshed script drops its cached sandbox, so the engine
+  /// pool runs the new code the next time that source is used.
+  Future<SourceRefreshResult> updateAllFromUrls() async {
+    final targets = sources
+        .where((source) => (source.importUrl ?? '').trim().isNotEmpty)
+        .toList();
+    final skipped = sources.length - targets.length;
+    var updated = 0;
+    final failed = <String>[];
+    debugLog?.record('全局刷新开始', <String, Object?>{
+      '待更新': targets.length,
+      '跳过（无 URL）': skipped,
+      '源': targets.map((source) => source.name).join('、'),
+    });
+    importing = true;
+    notifyListeners();
+    try {
+      for (final source in targets) {
+        final rawUrl = source.importUrl!.trim();
+        try {
+          final script = await _downloadScript(_parseUrl(rawUrl));
+          await repository.updateScript(source.id, script, importUrl: rawUrl);
+          _slots.remove(source.id);
+          _supported.remove(source.id);
+          updated++;
+          debugLog?.record('全局刷新成功 ${source.name}', <String, Object?>{
+            'URL': rawUrl,
+            '脚本长度': script.length,
+          });
+        } catch (e) {
+          failed.add('${source.name}: $e');
+          debugLog?.record('全局刷新失败 ${source.name}', <String, Object?>{
+            'URL': rawUrl,
+            '原因': '$e',
+          });
+        }
+        notifyListeners();
+      }
+    } finally {
+      importing = false;
+      notifyListeners();
+    }
+    final current = active;
+    if (current != null) await _initialize(current);
+    debugLog?.record('全局刷新结束', <String, Object?>{
+      '成功': updated,
+      '失败': failed.length,
+      '跳过': skipped,
+    });
+    return SourceRefreshResult(
+      updated: updated,
+      failed: failed,
+      skipped: skipped,
+    );
+  }
+
   Future<void> deleteSource(String id) async {
     await repository.delete(id);
     _supported.remove(id);
@@ -479,4 +537,18 @@ class SourceState extends ChangeNotifier {
     _slots.clear();
     super.dispose();
   }
+}
+
+/// Outcome of a batch refresh: how many scripts were replaced, which ones could
+/// not be reached, and how many sources had no URL to refresh from.
+class SourceRefreshResult {
+  const SourceRefreshResult({
+    required this.updated,
+    required this.failed,
+    required this.skipped,
+  });
+
+  final int updated;
+  final List<String> failed;
+  final int skipped;
 }
