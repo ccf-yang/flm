@@ -17,7 +17,18 @@ class AudioProbe {
 
   bool get networkFailed => error != null;
   bool get rejected => status >= 400;
-  bool get notAudio => contentType.startsWith('text/');
+
+  /// Broken aggregate hosts answer 200 with a JSON error body, and AVPlayer then
+  /// reports that only as the opaque code -11850. Anything that is clearly not a
+  /// media type counts as a dead link; unknown types stay playable, because many
+  /// hosts label a real mp3 stream as octet-stream or omit the header.
+  bool get notAudio {
+    final type = contentType.toLowerCase();
+    if (type.isEmpty) return false;
+    if (type.startsWith('audio/') || type.startsWith('video/')) return false;
+    if (type.contains('mpegurl')) return false;
+    return type != 'application/octet-stream';
+  }
 }
 
 /// The player reports these source links only as opaque AVFoundation codes, so
