@@ -1,0 +1,130 @@
+name: Build iOS IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: "Create or update a GitHub Release with the IPA"
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ios-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-ios:
+    runs-on: macos-15
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Flutter version
+        run: flutter --version
+
+      - name: Use CocoaPods (disable Swift Package Manager)
+        run: flutter config --no-enable-swift-package-manager || true
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      # Fail early with file/line errors before the Xcode build.
+      - name: Analyze Dart (errors only)
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
+
+      # Generates ios/, applies flm Info.plist, AppIcon, bundle id and iOS 14
+      # deployment target. The platform folder is intentionally not committed.
+      - name: Generate iOS project
+        run: bash tool/bootstrap_ios.sh
+
+      - name: Verify iOS configuration
+        run: |
+          set -e
+          test -f ios/Runner.xcodeproj/project.pbxproj
+          test -f ios/Runner/Info.plist
+          test -f ios/Podfile
+          /usr/libexec/PlistBuddy -c "Print :UIBackgroundModes" ios/Runner/Info.plist
+          /usr/libexec/PlistBuddy -c "Print :NSAppTransportSecurity:NSAllowsArbitraryLoads" ios/Runner/Info.plist
+
+      # Flutter 3.4x still validates the Development Team even with
+      # --no-codesign, so only generate the config here and sign nothing in
+      # xcodebuild below.
+      - name: Prepare Flutter iOS config
+        run: flutter build ios --release --config-only --no-codesign
+
+      - name: CocoaPods install
+        run: cd ios && pod install
+
+      - name: Xcode build (unsigned)
+        run: |
+          set -e
+          xcodebuild \
+            -workspace ios/Runner.xcworkspace \
+            -scheme Runner \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/ios \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Package unsigned IPA
+        run: |
+          set -e
+          APP_PATH=$(find build/ios -type d -name Runner.app | head -1)
+          test -n "$APP_PATH"
+          rm -rf Payload && mkdir -p Payload
+          cp -R "$APP_PATH" Payload/
+          zip -qr flm-unsigned.ipa Payload
+          ls -lh flm-unsigned.ipa
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: flm-ipa
+          path: flm-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Read version from pubspec
+        id: ver
+        run: |
+          V=$(grep -m1 '^version:' pubspec.yaml | sed 's/^version:[[:space:]]*//' | tr -d '\r')
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "tag=v$(echo "$V" | tr '+' '-')" >> "$GITHUB_OUTPUT"
+
+      - name: Publish to GitHub Releases
+        if: success() && github.event.inputs.create_release != 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          TAG="${{ steps.ver.outputs.tag }}"
+          TITLE="flm ${{ steps.ver.outputs.version }}"
+          FILE="flm-unsigned.ipa"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$FILE" --clobber
+            gh release edit "$TAG" --title "$TITLE" --latest
+          else
+            gh release create "$TAG" "$FILE" \
+              --title "$TITLE" \
+              --notes "Unsigned IPA built from ${{ github.sha }} (run #${{ github.run_number }})" \
+              --latest
+          fi
