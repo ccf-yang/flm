@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import 'http_bridge.dart';
@@ -31,18 +32,49 @@ class OnlineEngine {
 
   final HttpBridge _http;
   final WebViewController _controller = WebViewController();
-  final Completer<void> _ready = Completer<void>();
+  Completer<void> _ready = Completer<void>();
+  Future<void>? _loadFuture;
   final Map<int, Completer<dynamic>> _pending = <int, Completer<dynamic>>{};
   int _sequence = 0;
   bool _loaded = false;
+  String? _lastJsError;
 
   WebViewController get controller => _controller;
 
-  Future<void> load() async {
-    if (_loaded) return;
-    await _controller.loadFlutterAsset('assets/js/engine.html');
-    await _ready.future.timeout(const Duration(seconds: 30));
-    _loaded = true;
+  Future<void> load() {
+    if (_loaded) return Future<void>.value();
+    return _loadFuture ??= _doLoad();
+  }
+
+  Future<void> _doLoad() async {
+    try {
+      _ready = Completer<void>();
+      _lastJsError = null;
+      await _controller.loadFlutterAsset('assets/js/engine.html');
+      await _ready.future.timeout(const Duration(seconds: 30));
+
+      dynamic ready;
+      try {
+        ready = await _controller.runJavaScriptReturningResult(
+          '(function(){'
+          'if (window.__flmEngineReady === true && typeof LXEngine !== "undefined") return true;'
+          'var errors = window.__flmErrors || [];'
+          'return errors.length ? errors.join(" | ") : "LXEngine is undefined";'
+          '})()',
+        );
+      } catch (error) {
+        throw StateError('在线引擎脚本无法执行: $error');
+      }
+      if (ready != true && ready != 'true') {
+        final detail = _lastJsError == null ? '' : ' ($_lastJsError)';
+        throw StateError('在线引擎启动失败: $ready$detail');
+      }
+      _loaded = true;
+    } catch (error) {
+      _loaded = false;
+      _loadFuture = null;
+      rethrow;
+    }
   }
 
   Future<dynamic> call(String action, [Map<String, dynamic> params = const <String, dynamic>{}]) async {
@@ -56,7 +88,8 @@ class OnlineEngine {
       );
     } catch (error) {
       _pending.remove(id);
-      rethrow;
+      final detail = _lastJsError == null ? '' : ' ($_lastJsError)';
+      throw StateError('在线引擎执行失败: $error$detail');
     }
     return completer.future.timeout(
       const Duration(seconds: 35),
@@ -88,6 +121,10 @@ class OnlineEngine {
         break;
       case 'engineError':
         _completeError(data);
+        break;
+      case 'jsError':
+        _lastJsError = '${data['message'] ?? 'unknown'}';
+        debugPrint('[flm][online-engine] ${message.message}');
         break;
       default:
         break;

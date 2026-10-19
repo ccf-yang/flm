@@ -82,6 +82,27 @@ const aliasPlugin = {
   },
 }
 
+// iOS JavaScriptCore before 16.4 does not support RegExp lookbehind.  The kw
+// SDK uses one in objStr2JSON; rewrite it with lookahead-only patterns so the
+// whole bundle does not fail to parse on older iPhones.
+const kwCompatPlugin = {
+  name: 'kw-lookbehind-compat',
+  setup(build) {
+    build.onLoad({ filter: /kw\/util\.js$/ }, (args) => {
+      const source = fs.readFileSync(args.path, 'utf8')
+      const lines = source.split('\n')
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].includes('JSON.parse(str.replace(') && lines[i].includes('(?<=')) {
+          lines[i] =
+            `  return JSON.parse(str.replace(/([({,:]\\s*)'|'(?=\\s*,\\s*')|'(?=\\s*:)|'(?=\\s*})/g, (match, prefix) => (prefix ?? '') + '"'))`
+          break
+        }
+      }
+      return { contents: lines.join('\n'), loader: 'js' }
+    })
+  },
+}
+
 await esbuild.build({
   entryPoints: [path.join(here, 'entry.js')],
   bundle: true,
@@ -96,9 +117,45 @@ await esbuild.build({
     'process.env.NODE_ENV': '"production"',
     global: 'globalThis',
   },
-  plugins: [aliasPlugin],
+  plugins: [aliasPlugin, kwCompatPlugin],
   logLevel: 'info',
 })
+
+// Capture parse/runtime errors from the engine script.  Without this a syntax
+// error leaves LXEngine undefined and webview_flutter only reports a generic
+// "Failed evaluating JavaScript" PlatformException.
+const errorPrelude = `(function () {
+  window.__flmErrors = window.__flmErrors || [];
+  function record(message, source, line, column, stack) {
+    var text = String(message || 'unknown');
+    window.__flmErrors.push(text);
+    try {
+      if (typeof FlmBridge !== 'undefined' && FlmBridge.postMessage) {
+        FlmBridge.postMessage(JSON.stringify({
+          type: 'jsError',
+          message: text,
+          source: source || '',
+          line: line || 0,
+          column: column || 0,
+          stack: stack || ''
+        }));
+      }
+    } catch (_) {}
+  }
+  window.addEventListener('error', function (event) {
+    record(
+      event.message || (event.error && event.error.message) || 'unknown',
+      event.filename,
+      event.lineno,
+      event.colno,
+      event.error && event.error.stack
+    );
+  });
+  window.addEventListener('unhandledrejection', function (event) {
+    var reason = event.reason;
+    record('unhandledrejection: ' + String((reason && reason.stack) || reason || 'unknown'));
+  });
+})();`
 
 const htmlFile = path.resolve(here, '../../assets/js/engine.html')
 const bundle = fs.readFileSync(outfile, 'utf8').replace(/<\/script/gi, '<\\/script')
@@ -109,6 +166,7 @@ fs.writeFileSync(htmlFile, `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 </head>
 <body>
+<script>${errorPrelude}</script>
 <script>${bundle}</script>
 </body>
 </html>
