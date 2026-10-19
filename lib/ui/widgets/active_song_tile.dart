@@ -17,6 +17,7 @@ class ActiveSongTile extends StatelessWidget {
     this.showCover = false,
     this.selected = false,
     this.selectionMode = false,
+    this.ranked = false,
   });
 
   final Song song;
@@ -28,6 +29,7 @@ class ActiveSongTile extends StatelessWidget {
   final bool showCover;
   final bool selected;
   final bool selectionMode;
+  final bool ranked;
 
   @override
   Widget build(BuildContext context) {
@@ -45,6 +47,7 @@ class ActiveSongTile extends StatelessWidget {
       selected: selected,
       selectionMode: selectionMode,
       active: active,
+      ranked: ranked,
     );
   }
 }

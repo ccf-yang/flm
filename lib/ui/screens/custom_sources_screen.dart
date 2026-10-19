@@ -1,9 +1,11 @@
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/theme.dart';
 import '../../models/custom_source.dart';
 import '../../state/source_state.dart';
+import '../kit.dart';
 import '../widgets/empty_state.dart';
 
 class CustomSourcesScreen extends StatelessWidget {
@@ -14,112 +16,97 @@ class CustomSourcesScreen extends StatelessWidget {
     final state = context.watch<SourceState>();
     final activeId = state.active?.id;
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('自定义源'),
-        actions: <Widget>[
-          IconButton(
-            tooltip: '导入脚本',
-            onPressed: () => _showImportMenu(context, state),
-            icon: const Icon(Icons.add_rounded),
-          ),
-          const SizedBox(width: 4),
-        ],
-      ),
-      body: ListView(
-        padding: const EdgeInsets.only(bottom: 32),
+      body: Stack(
         children: <Widget>[
-          if (state.loading || state.importing)
-            const LinearProgressIndicator(minHeight: 2),
-          _StatusCard(state: state),
-          const SectionHeader(title: '已导入的源'),
-          if (state.sources.isEmpty)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 20),
-              child: EmptyState(
-                title: '还没有自定义源',
-                message: '导入 .js 音源脚本后，才能播放在线歌曲',
-                icon: Icons.extension_outlined,
-              ),
-            )
-          else
-            ...state.sources.map((source) {
-              final active = source.id == activeId;
-              return ListTile(
-                onTap: () => _activate(context, state, source),
-                leading: Container(
-                  width: 42,
-                  height: 42,
-                  decoration: BoxDecoration(
-                    color: surfaceHighFor(context),
-                    borderRadius: BorderRadius.circular(10),
+          Positioned.fill(child: AuroraBackground(deep: true)),
+          SafeArea(
+            bottom: false,
+            child: Column(
+              children: <Widget>[
+                FlmNavBar(
+                  leading: IconBtn(
+                    icon: CupertinoIcons.chevron_left,
+                    onTap: () => Navigator.of(context).maybePop(),
                   ),
-                  child: Icon(
-                    Icons.extension_rounded,
-                    color: active ? AppColors.accent : mutedFor(context),
-                  ),
-                ),
-                title: Text(
-                  source.name,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w600,
-                    color: active ? AppColors.accent : textFor(context),
-                  ),
-                ),
-                subtitle: Text(
-                  <String>[
-                    if (source.version.isNotEmpty) 'v${source.version}',
-                    if (source.author.isNotEmpty) source.author,
-                    if (source.createdAt > 0) _dateLabel(source.createdAt),
-                    if (source.importUrl != null) '在线源',
-                  ].join(' · '),
-                ),
-                trailing: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: <Widget>[
-                    if (active)
-                      const Icon(Icons.check_circle_rounded, color: AppColors.accent),
-                    if (source.importUrl != null)
-                      IconButton(
-                        tooltip: '从原 URL 更新',
-                        onPressed: () => _updateFromUrl(context, state, source),
-                        icon: const Icon(Icons.refresh_rounded, size: 20),
-                      ),
-                    IconButton(
-                      tooltip: '删除',
-                      onPressed: () => _delete(context, state, source),
-                      icon: const Icon(Icons.delete_outline_rounded, size: 20),
+                  title: '自定义源',
+                  trailing: <Widget>[
+                    IconBtn(
+                      icon: CupertinoIcons.plus,
+                      tooltip: '导入脚本',
+                      onTap: () => _showImportMenu(context, state),
                     ),
                   ],
                 ),
-              );
-            }),
-          if (state.sources.isNotEmpty)
-            ListTile(
-              leading: const Icon(Icons.block_rounded),
-              title: const Text('不使用自定义源'),
-              subtitle: const Text('仍然可以浏览搜索、歌单、排行榜和歌词'),
-              trailing: activeId == null
-                  ? const Icon(Icons.check_rounded, color: AppColors.accent)
-                  : null,
-              onTap: () => state.setActive(null),
-            ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-            child: FilledButton.icon(
-              onPressed: () => _showImportMenu(context, state),
-              icon: const Icon(Icons.file_open_rounded),
-              label: const Text('导入自定义源（本地 / URL）'),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
-            child: Text(
-              '说明：脚本只在本地 WebView 沙箱中运行，用于把歌曲信息转换为音频链接。'
-              'flm 不内置任何音源，也不对脚本内容负责。',
-              style: TextStyle(fontSize: 12, height: 1.5, color: mutedFor(context)),
+                Expanded(
+                  child: ListView(
+                    padding: const EdgeInsets.only(bottom: 40),
+                    children: <Widget>[
+                      if (state.loading || state.importing)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: kGutter),
+                          child: const LinearProgressIndicator(minHeight: 2),
+                        ),
+                      _StatusCard(state: state),
+                      SectionHead(title: '已导入的源', note: '${state.sources.length} 个'),
+                      if (state.sources.isEmpty)
+                        const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 18),
+                          child: EmptyState(
+                            title: '还没有自定义源',
+                            message: '导入 .js 音源脚本后，才能播放在线歌曲',
+                            icon: CupertinoIcons.capsule,
+                          ),
+                        )
+                      else
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: kGutter),
+                          child: Column(
+                            children: <Widget>[
+                              ...state.sources.map((source) {
+                                final active = source.id == activeId;
+                                return _SourceRow(
+                                  source: source,
+                                  active: active,
+                                  onTap: () => _activate(context, state, source),
+                                  onUpdate: source.importUrl == null
+                                      ? null
+                                      : () => _updateFromUrl(context, state, source),
+                                  onDelete: () => _delete(context, state, source),
+                                );
+                              }),
+                              const SizedBox(height: 4),
+                              _NoSourceRow(
+                                active: activeId == null,
+                                onTap: () => state.setActive(null),
+                              ),
+                            ],
+                          ),
+                        ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(kGutter, 18, kGutter, 0),
+                        child: AuroraButton(
+                          label: '导入自定义源（本地 / URL）',
+                          icon: CupertinoIcons.square_arrow_down,
+                          onTap: () => _showImportMenu(context, state),
+                          expand: true,
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(kGutter, 16, kGutter, 0),
+                        child: Text(
+                          '说明：脚本只在本地 WebView 沙箱中运行，用于把歌曲信息转换为音频链接。'
+                          'flm 不内置任何音源，也不对脚本内容负责。',
+                          style: TextStyle(
+                            fontSize: 11.5,
+                            height: 1.6,
+                            color: faintFor(context),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
             ),
           ),
         ],
@@ -127,89 +114,46 @@ class CustomSourcesScreen extends StatelessWidget {
     );
   }
 
-  String _dateLabel(int timestamp) {
-    final date = DateTime.fromMillisecondsSinceEpoch(timestamp);
-    return '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
-  }
-
   Future<void> _showImportMenu(BuildContext context, SourceState state) async {
-    await showModalBottomSheet<void>(
-      context: context,
-      showDragHandle: true,
-      builder: (sheetContext) {
-        return SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: <Widget>[
-              ListTile(
-                leading: const Icon(Icons.file_open_rounded),
-                title: const Text('本地导入'),
-                subtitle: const Text('从「文件」App 选择 .js 音源脚本'),
-                onTap: () {
-                  Navigator.pop(sheetContext);
-                  _import(context, state);
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.link_rounded),
-                title: const Text('在线导入'),
-                subtitle: const Text('填写脚本的 http / https 直链地址'),
-                onTap: () {
-                  Navigator.pop(sheetContext);
-                  _importFromUrl(context, state);
-                },
-              ),
-              const SizedBox(height: 8),
-            ],
+    await showFlmSheet<void>(
+      context,
+      title: '导入音源脚本',
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          SheetAction(
+            icon: CupertinoIcons.folder,
+            label: '本地导入',
+            subtitle: '从「文件」App 选择 .js 音源脚本',
+            onTap: () {
+              Navigator.pop(context);
+              _import(context, state);
+            },
           ),
-        );
-      },
+          SheetAction(
+            icon: CupertinoIcons.square_arrow_down,
+            label: '在线导入',
+            subtitle: '填写脚本的 http / https 直链地址',
+            onTap: () {
+              Navigator.pop(context);
+              _importFromUrl(context, state);
+            },
+          ),
+          const SizedBox(height: 8),
+        ],
+      ),
     );
   }
 
   Future<void> _importFromUrl(BuildContext context, SourceState state) async {
-    final controller = TextEditingController();
-    final url = await showDialog<String>(
-      context: context,
-      builder: (dialogContext) {
-        return AlertDialog(
-          title: const Text('在线导入自定义源'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: <Widget>[
-              Text(
-                '填写 .js 音源脚本的直链地址，例如 GitHub Raw。',
-                style: TextStyle(fontSize: 12, color: mutedFor(dialogContext)),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: controller,
-                autofocus: true,
-                keyboardType: TextInputType.url,
-                autocorrect: false,
-                decoration: const InputDecoration(
-                  hintText: 'https://example.com/source.js',
-                ),
-                onSubmitted: (value) => Navigator.pop(dialogContext, value),
-              ),
-            ],
-          ),
-          actions: <Widget>[
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('取消'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(dialogContext, controller.text),
-              child: const Text('下载并导入'),
-            ),
-          ],
-        );
-      },
+    final url = await flmInputDialog(
+      context,
+      title: '在线导入自定义源',
+      message: '填写 .js 音源脚本的直链地址，例如 GitHub Raw。',
+      placeholder: 'https://example.com/source.js',
+      confirmLabel: '下载并导入',
     );
-    controller.dispose();
-    if (url == null || url.trim().isEmpty) return;
+    if (url == null || url.isEmpty) return;
 
     try {
       final info = await state.importSourceFromUrl(url);
@@ -218,14 +162,10 @@ class CustomSourcesScreen extends StatelessWidget {
         await state.setActive(info);
       }
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('已导入「${info.name}」')),
-      );
+      flmToast(context, '已导入「${info.name}」');
     } catch (error) {
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('在线导入失败: $error')),
-      );
+      flmToast(context, '在线导入失败: $error');
     }
   }
 
@@ -237,14 +177,10 @@ class CustomSourcesScreen extends StatelessWidget {
         await state.setActive(info);
       }
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('已导入「${info.name}」')),
-      );
+      flmToast(context, '已导入「${info.name}」');
     } catch (error) {
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('导入失败: $error')),
-      );
+      flmToast(context, '导入失败: $error');
     }
   }
 
@@ -256,13 +192,9 @@ class CustomSourcesScreen extends StatelessWidget {
     await state.setActive(source);
     if (!context.mounted) return;
     if (state.error != null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('启用失败: ${state.error}')),
-      );
+      flmToast(context, '启用失败: ${state.error}');
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('已启用「${source.name}」')),
-      );
+      flmToast(context, '已启用「${source.name}」');
     }
   }
 
@@ -274,14 +206,10 @@ class CustomSourcesScreen extends StatelessWidget {
     try {
       final updated = await state.updateSourceFromUrl(source);
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('已从原 URL 更新「${updated.name}」')),
-      );
+      flmToast(context, '已从原 URL 更新「${updated.name}」');
     } catch (error) {
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('更新失败: $error')),
-      );
+      flmToast(context, '更新失败: $error');
     }
   }
 
@@ -290,26 +218,172 @@ class CustomSourcesScreen extends StatelessWidget {
     SourceState state,
     CustomSourceInfo source,
   ) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('删除自定义源'),
-        content: Text('确定要删除「${source.name}」吗？'),
-        actions: <Widget>[
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('删除'),
-          ),
-        ],
-      ),
+    final confirmed = await flmConfirmDialog(
+      context,
+      title: '删除自定义源',
+      message: '确定要删除「${source.name}」吗？',
+      confirmLabel: '删除',
+      danger: true,
     );
-    if (confirmed != true) return;
+    if (!confirmed) return;
     if (!context.mounted) return;
     await state.deleteSource(source.id);
+  }
+}
+
+class _SourceRow extends StatelessWidget {
+  const _SourceRow({
+    required this.source,
+    required this.active,
+    required this.onTap,
+    required this.onDelete,
+    this.onUpdate,
+  });
+
+  final CustomSourceInfo source;
+  final bool active;
+  final VoidCallback onTap;
+  final VoidCallback onDelete;
+  final VoidCallback? onUpdate;
+
+  @override
+  Widget build(BuildContext context) {
+    final parts = <String>[
+      if (source.version.isNotEmpty) 'v${source.version}',
+      if (source.author.isNotEmpty) source.author,
+      if (source.createdAt > 0) _date(source.createdAt),
+      if (source.importUrl != null) '在线源',
+    ];
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Pressable(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(12, 12, 6, 12),
+          decoration: BoxDecoration(
+            color: active ? accentSoftColor(context) : surfaceFor(context),
+            borderRadius: BorderRadius.circular(15),
+            border: Border.all(
+              color: active ? accentBorderColor(context) : lineColor(context),
+            ),
+          ),
+          child: Row(
+            children: <Widget>[
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: surfaceHighFor(context),
+                  borderRadius: BorderRadius.circular(11),
+                ),
+                child: Icon(
+                  CupertinoIcons.capsule,
+                  size: 20,
+                  color: active ? accentFor(context) : mutedFor(context),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
+                      source.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                        color: active ? accentFor(context) : textFor(context),
+                      ),
+                    ),
+                    if (parts.isNotEmpty) ...<Widget>[
+                      const SizedBox(height: 3),
+                      Text(
+                        parts.join(' · '),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(fontSize: 10.5, color: mutedFor(context)),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              if (active)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                  child: Icon(CupertinoIcons.checkmark_circle_fill, size: 18, color: accentFor(context)),
+                ),
+              if (onUpdate != null)
+                IconButton(
+                  onPressed: onUpdate,
+                  visualDensity: VisualDensity.compact,
+                  icon: Icon(CupertinoIcons.arrow_clockwise, size: 18, color: mutedFor(context)),
+                ),
+              IconButton(
+                onPressed: onDelete,
+                visualDensity: VisualDensity.compact,
+                icon: Icon(CupertinoIcons.trash, size: 18, color: mutedFor(context)),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  String _date(int timestamp) {
+    final date = DateTime.fromMillisecondsSinceEpoch(timestamp);
+    return '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
+  }
+}
+
+class _NoSourceRow extends StatelessWidget {
+  const _NoSourceRow({required this.active, required this.onTap});
+
+  final bool active;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Pressable(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: surfaceFor(context),
+          borderRadius: BorderRadius.circular(15),
+          border: Border.all(color: lineColor(context)),
+        ),
+        child: Row(
+          children: <Widget>[
+            Icon(CupertinoIcons.exclamationmark_shield_fill, size: 20, color: mutedFor(context)),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text(
+                    '不使用自定义源',
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: textFor(context),
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    '仍然可以浏览搜索、歌单、排行榜和歌词',
+                    style: TextStyle(fontSize: 10.5, color: mutedFor(context)),
+                  ),
+                ],
+              ),
+            ),
+            if (active) Icon(CupertinoIcons.check_mark, color: accentFor(context)),
+          ],
+        ),
+      ),
+    );
   }
 }
 
@@ -323,58 +397,54 @@ class _StatusCard extends StatelessWidget {
     final active = state.active;
     final error = state.error;
     final capabilities = state.capabilities;
-    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final isDark = auroraIsDark(context);
 
-    Color background;
     Color foreground;
     String title;
     String message;
     IconData icon;
 
     if (active == null) {
-      background = isDark ? const Color(0xFF2A2415) : const Color(0xFFFFF7E6);
-      foreground = isDark ? const Color(0xFFF5D58B) : const Color(0xFF9A6700);
+      foreground = goldFor(context);
       title = '未启用自定义源';
       message = '搜索和歌单可以正常浏览，但在线播放需要先启用一个音源脚本。';
-      icon = Icons.info_outline_rounded;
+      icon = CupertinoIcons.circle;
     } else if (error != null) {
-      background = AppColors.danger.withValues(alpha: 0.1);
-      foreground = AppColors.danger;
+      foreground = coralFor(context);
       title = '${active.name} 初始化失败';
       message = error;
-      icon = Icons.error_outline_rounded;
+      icon = CupertinoIcons.exclamationmark_shield_fill;
     } else if (state.loading) {
-      background = AppColors.accent.withValues(alpha: 0.1);
-      foreground = AppColors.accent;
+      foreground = accentFor(context);
       title = '${active.name} 初始化中';
       message = '正在加载脚本并读取支持的音乐平台…';
-      icon = Icons.hourglass_empty_rounded;
+      icon = CupertinoIcons.clock;
     } else if (capabilities.isEmpty) {
-      background = AppColors.danger.withValues(alpha: 0.1);
-      foreground = AppColors.danger;
+      foreground = coralFor(context);
       title = '${active.name} 尚未就绪';
       message = '脚本没有返回可用的音源能力，请检查脚本是否完整。';
-      icon = Icons.warning_amber_rounded;
+      icon = CupertinoIcons.exclamationmark_shield_fill;
     } else {
-      background = AppColors.accent.withValues(alpha: 0.1);
-      foreground = AppColors.accent;
+      foreground = accentFor(context);
       title = '${active.name} 已启用';
-      message = '可用的平台：${capabilities.sources.keys.map((item) => item.toUpperCase()).join('、')}';
-      icon = Icons.check_circle_outline_rounded;
+      message =
+          '可用的平台：${capabilities.sources.keys.map((item) => item.toUpperCase()).join('、')}';
+      icon = CupertinoIcons.checkmark_shield_fill;
     }
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+      padding: const EdgeInsets.fromLTRB(kGutter, 8, kGutter, 2),
       child: Container(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(15),
         decoration: BoxDecoration(
-          color: background,
-          borderRadius: BorderRadius.circular(16),
+          color: foreground.withValues(alpha: isDark ? 0.10 : 0.08),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: foreground.withValues(alpha: 0.26)),
         ),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[
-            Icon(icon, color: foreground),
+            Icon(icon, color: foreground, size: 20),
             const SizedBox(width: 12),
             Expanded(
               child: Column(
@@ -383,7 +453,7 @@ class _StatusCard extends StatelessWidget {
                   Text(
                     title,
                     style: TextStyle(
-                      fontSize: 15,
+                      fontSize: 14,
                       fontWeight: FontWeight.w700,
                       color: foreground,
                     ),
@@ -392,8 +462,8 @@ class _StatusCard extends StatelessWidget {
                   Text(
                     message,
                     style: TextStyle(
-                      fontSize: 12.5,
-                      height: 1.45,
+                      fontSize: 12,
+                      height: 1.5,
                       color: foreground.withValues(alpha: 0.9),
                     ),
                   ),
@@ -414,7 +484,7 @@ class _StatusCard extends StatelessWidget {
                           child: Text(
                             '${entry.key.toUpperCase()} · $actionText',
                             style: TextStyle(
-                              fontSize: 10.5,
+                              fontSize: 10,
                               fontWeight: FontWeight.w600,
                               color: foreground,
                             ),

@@ -1,142 +1,252 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
+/// Quiet Aurora design tokens, ported from the ui.html design study.
+/// Dark is the base identity; light is the "bone" companion palette.
 class AppColors {
-  static const accent = Color(0xFF14B8A6);
-  static const accentSoft = Color(0xFF5EEAD4);
-  static const darkBackground = Color(0xFF0B1220);
-  static const darkSurface = Color(0xFF111A2B);
-  static const darkSurfaceHigh = Color(0xFF18233A);
-  static const lightBackground = Color(0xFFF6F8FB);
+  // Dark tokens
+  static const darkBg = Color(0xFF07090C);
+  static const darkBgDeep = Color(0xFF040507);
+  static const darkSurface = Color(0xFF12171D);
+  static const darkSurface2 = Color(0xFF171D24);
+  static const darkSurface3 = Color(0xFF1F2730);
+  static const darkText = Color(0xFFF3F6F4);
+  static const darkText2 = Color(0xFFA0AAB1);
+  static const darkText3 = Color(0xFF6D7780);
+  static const darkLine = Color(0x13FFFFFF); // white @ .075
+  static const darkLineStrong = Color(0x24FFFFFF); // white @ .14
+
+  // Light tokens
+  static const lightBg = Color(0xFFF3F5F1);
+  static const lightBgDeep = Color(0xFFE9ECE6);
   static const lightSurface = Color(0xFFFFFFFF);
-  static const lightSurfaceHigh = Color(0xFFEDF2F7);
-  static const danger = Color(0xFFEF4444);
+  static const lightSurface2 = Color(0xFFECEFE9);
+  static const lightSurface3 = Color(0xFFE1E5DE);
+  static const lightText = Color(0xFF101511);
+  static const lightText2 = Color(0xFF5D6861);
+  static const lightText3 = Color(0xFF8D968F);
+  static const lightLine = Color(0x14101511); // ink @ .08
+  static const lightLineStrong = Color(0x24101511); // ink @ .14
+
+  // Accent per appearance (mint on dark, jade on light)
+  static const accentDark = Color(0xFF9AF4D2);
+  static const accentStrongDark = Color(0xFF61E6B8);
+  static const accentInkDark = Color(0xFF06241B);
+  static const accentLight = Color(0xFF0E9F78);
+  static const accentStrongLight = Color(0xFF0A8060);
+  static const accentInkLight = Color(0xFFFFFFFF);
+
+  static const coralDark = Color(0xFFFF8F7A);
+  static const coralLight = Color(0xFFD65E48);
+  static const goldDark = Color(0xFFF2D08C);
+  static const goldLight = Color(0xFFA67A26);
+
+  /// Brand gradient shared by the local-music hero card and big covers.
+  static const brandGradient = <Color>[Color(0xFF0F766E), Color(0xFF14B8A6)];
+
+  static const danger = coralDark;
+  static const accent = accentDark;
+  static const accentSoft = accentDark;
+  static const darkBackground = darkBg;
+  static const darkSurfaceHigh = darkSurface3;
+  static const lightBackground = lightBg;
+  static const lightSurfaceHigh = lightSurface2;
 }
+
+/// Motion curves from the design study.
+class AuroraMotion {
+  static const Curve ease = Cubic(0.22, 1, 0.36, 1);
+  static const Curve spring = Cubic(0.16, 1, 0.3, 1);
+  static const Duration quick = Duration(milliseconds: 180);
+  static const Duration base = Duration(milliseconds: 260);
+}
+
+bool auroraIsDark(BuildContext context) =>
+    Theme.of(context).brightness == Brightness.dark;
+
+Color bgFor(BuildContext context) =>
+    auroraIsDark(context) ? AppColors.darkBg : AppColors.lightBg;
+
+Color bgDeepFor(BuildContext context) =>
+    auroraIsDark(context) ? AppColors.darkBgDeep : AppColors.lightBgDeep;
+
+Color surfaceFor(BuildContext context) =>
+    auroraIsDark(context) ? AppColors.darkSurface : AppColors.lightSurface;
+
+Color surface2For(BuildContext context) => auroraIsDark(context)
+    ? AppColors.darkSurface2
+    : AppColors.lightSurface2;
+
+Color surfaceHighFor(BuildContext context) => auroraIsDark(context)
+    ? AppColors.darkSurface3
+    : AppColors.lightSurface3;
+
+Color textFor(BuildContext context) =>
+    auroraIsDark(context) ? AppColors.darkText : AppColors.lightText;
+
+/// Secondary text (was mutedFor).
+Color mutedFor(BuildContext context) =>
+    auroraIsDark(context) ? AppColors.darkText2 : AppColors.lightText2;
+
+/// Tertiary, overline-grade text.
+Color faintFor(BuildContext context) =>
+    auroraIsDark(context) ? AppColors.darkText3 : AppColors.lightText3;
+
+Color lineColor(BuildContext context) =>
+    auroraIsDark(context) ? AppColors.darkLine : AppColors.lightLine;
+
+Color lineStrongColor(BuildContext context) =>
+    auroraIsDark(context) ? AppColors.darkLineStrong : AppColors.lightLineStrong;
+
+Color accentFor(BuildContext context) =>
+    auroraIsDark(context) ? AppColors.accentDark : AppColors.accentLight;
+
+Color accentStrongFor(BuildContext context) => auroraIsDark(context)
+    ? AppColors.accentStrongDark
+    : AppColors.accentStrongLight;
+
+/// Text/ink color to place on top of an accent-filled surface.
+Color accentInkFor(BuildContext context) =>
+    auroraIsDark(context) ? AppColors.accentInkDark : AppColors.accentInkLight;
+
+Color accentSoftColor(BuildContext context) =>
+    accentFor(context).withValues(alpha: 0.12);
+
+Color accentBorderColor(BuildContext context) =>
+    accentFor(context).withValues(alpha: 0.26);
+
+Color coralFor(BuildContext context) =>
+    auroraIsDark(context) ? AppColors.coralDark : AppColors.coralLight;
+
+Color goldFor(BuildContext context) =>
+    auroraIsDark(context) ? AppColors.goldDark : AppColors.goldLight;
 
 ThemeData buildAppTheme(Brightness brightness) {
   final isDark = brightness == Brightness.dark;
+  final accent = isDark ? AppColors.accentDark : AppColors.accentLight;
   final scheme = ColorScheme.fromSeed(
-    seedColor: AppColors.accent,
+    seedColor: const Color(0xFF14B8A6),
     brightness: brightness,
   ).copyWith(
-    primary: AppColors.accent,
-    secondary: AppColors.accentSoft,
+    primary: accent,
+    secondary: isDark ? AppColors.accentStrongDark : AppColors.accentStrongLight,
     surface: isDark ? AppColors.darkSurface : AppColors.lightSurface,
-    error: AppColors.danger,
+    error: isDark ? AppColors.coralDark : AppColors.coralLight,
   );
 
   return ThemeData(
     useMaterial3: true,
     brightness: brightness,
     colorScheme: scheme,
-    scaffoldBackgroundColor: isDark ? AppColors.darkBackground : AppColors.lightBackground,
+    scaffoldBackgroundColor: Colors.transparent,
     splashFactory: NoSplash.splashFactory,
+    highlightColor: accentSoftColor0(accent),
     visualDensity: VisualDensity.standard,
-    appBarTheme: AppBarTheme(
-      elevation: 0,
-      scrolledUnderElevation: 0,
-      centerTitle: false,
-      backgroundColor: isDark ? AppColors.darkBackground : AppColors.lightBackground,
-      foregroundColor: isDark ? Colors.white : const Color(0xFF111827),
-      titleTextStyle: TextStyle(
-        fontSize: 20,
-        fontWeight: FontWeight.w700,
-        letterSpacing: -0.2,
-        color: isDark ? Colors.white : const Color(0xFF111827),
-      ),
-    ),
-    dividerColor: isDark ? const Color(0x1AFFFFFF) : const Color(0x14000000),
-    colorSchemeSeed: AppColors.accent,
-    pageTransitionsTheme: const PageTransitionsTheme(
-      builders: <TargetPlatform, PageTransitionsBuilder>{
-        TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
-        TargetPlatform.android: CupertinoPageTransitionsBuilder(),
-        TargetPlatform.macOS: CupertinoPageTransitionsBuilder(),
-      },
-    ),
+    dividerColor: isDark ? AppColors.darkLine : AppColors.lightLine,
     textTheme: TextTheme(
       titleLarge: TextStyle(
-        fontSize: 22,
+        fontSize: 21,
         fontWeight: FontWeight.w700,
-        letterSpacing: -0.3,
-        color: isDark ? Colors.white : const Color(0xFF111827),
+        letterSpacing: -0.4,
+        color: isDark ? AppColors.darkText : AppColors.lightText,
       ),
       titleMedium: TextStyle(
-        fontSize: 16,
+        fontSize: 15,
         fontWeight: FontWeight.w600,
-        color: isDark ? Colors.white : const Color(0xFF111827),
+        color: isDark ? AppColors.darkText : AppColors.lightText,
       ),
       bodyMedium: TextStyle(
-        fontSize: 14,
-        color: isDark ? const Color(0xFFCBD5E1) : const Color(0xFF4B5563),
+        fontSize: 13,
+        color: isDark ? AppColors.darkText2 : AppColors.lightText2,
       ),
       bodySmall: TextStyle(
-        fontSize: 12,
-        color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF6B7280),
+        fontSize: 11,
+        color: isDark ? AppColors.darkText3 : AppColors.lightText3,
       ),
     ),
     sliderTheme: SliderThemeData(
-      activeTrackColor: AppColors.accent,
-      thumbColor: Colors.white,
-      inactiveTrackColor: isDark ? const Color(0xFF24324A) : const Color(0xFFD9E2EC),
+      activeTrackColor: accent,
+      inactiveTrackColor:
+          isDark ? const Color(0xFF1F2730) : const Color(0xFFE1E5DE),
       trackHeight: 3,
+      thumbColor: accent,
       overlayShape: SliderComponentShape.noOverlay,
-      thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-    ),
-    switchTheme: SwitchThemeData(
-      thumbColor: WidgetStateProperty.resolveWith(
-        (states) => states.contains(WidgetState.selected) ? Colors.white : null,
-      ),
-      trackColor: WidgetStateProperty.resolveWith(
-        (states) => states.contains(WidgetState.selected) ? AppColors.accent : null,
+      valueIndicatorColor: isDark ? AppColors.darkSurface3 : AppColors.lightSurface3,
+      valueIndicatorTextStyle: TextStyle(
+        color: isDark ? AppColors.darkText : AppColors.lightText,
+        fontSize: 11,
       ),
     ),
     snackBarTheme: SnackBarThemeData(
       behavior: SnackBarBehavior.floating,
-      backgroundColor: isDark ? const Color(0xFF1F2A3E) : const Color(0xFF111827),
-      contentTextStyle: const TextStyle(color: Colors.white),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      backgroundColor: isDark ? const Color(0xFF1F2730) : const Color(0xFF101511),
+      contentTextStyle: const TextStyle(color: Color(0xFFF3F6F4), fontSize: 13),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
     ),
-    bottomSheetTheme: BottomSheetThemeData(
+    bottomSheetTheme: const BottomSheetThemeData(
+      backgroundColor: Colors.transparent,
+      surfaceTintColor: Colors.transparent,
+      modalBarrierColor: Color(0x99000000),
+    ),
+    dialogTheme: DialogThemeData(
       backgroundColor: isDark ? AppColors.darkSurface : AppColors.lightSurface,
       surfaceTintColor: Colors.transparent,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(22),
+        side: BorderSide(color: isDark ? AppColors.darkLine : AppColors.lightLine),
+      ),
+      titleTextStyle: TextStyle(
+        fontSize: 16,
+        fontWeight: FontWeight.w700,
+        color: isDark ? AppColors.darkText : AppColors.lightText,
+      ),
+      contentTextStyle: TextStyle(
+        fontSize: 13,
+        height: 1.45,
+        color: isDark ? AppColors.darkText2 : AppColors.lightText2,
+      ),
+    ),
+    inputDecorationTheme: InputDecorationTheme(
+      filled: true,
+      fillColor: isDark ? AppColors.darkSurface2 : AppColors.lightSurface2,
+      hintStyle: TextStyle(
+        color: isDark ? AppColors.darkText3 : AppColors.lightText3,
+        fontSize: 13.5,
+      ),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(14),
+        borderSide: BorderSide(
+          color: isDark ? AppColors.darkLine : AppColors.lightLine,
+        ),
+      ),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(14),
+        borderSide: BorderSide(
+          color: isDark ? AppColors.darkLine : AppColors.lightLine,
+        ),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(14),
+        borderSide: BorderSide(color: accent, width: 1.4),
       ),
     ),
   );
 }
 
-Color surfaceFor(BuildContext context) {
-  final isDark = Theme.of(context).brightness == Brightness.dark;
-  return isDark ? AppColors.darkSurface : AppColors.lightSurface;
-}
-
-Color surfaceHighFor(BuildContext context) {
-  final isDark = Theme.of(context).brightness == Brightness.dark;
-  return isDark ? AppColors.darkSurfaceHigh : AppColors.lightSurfaceHigh;
-}
-
-Color mutedFor(BuildContext context) {
-  final isDark = Theme.of(context).brightness == Brightness.dark;
-  return isDark ? const Color(0xFF94A3B8) : const Color(0xFF6B7280);
-}
-
-Color textFor(BuildContext context) {
-  final isDark = Theme.of(context).brightness == Brightness.dark;
-  return isDark ? Colors.white : const Color(0xFF111827);
-}
+Color accentSoftColor0(Color accent) => accent.withValues(alpha: 0.10);
 
 CupertinoThemeData buildCupertinoTheme(Brightness brightness) {
   final isDark = brightness == Brightness.dark;
   return CupertinoThemeData(
     brightness: brightness,
-    primaryColor: AppColors.accent,
-    scaffoldBackgroundColor: isDark ? AppColors.darkBackground : AppColors.lightBackground,
-    barBackgroundColor: isDark ? AppColors.darkBackground : AppColors.lightBackground,
+    primaryColor: isDark ? AppColors.accentDark : AppColors.accentLight,
+    scaffoldBackgroundColor:
+        isDark ? AppColors.darkBg : AppColors.lightBg,
+    barBackgroundColor: isDark ? AppColors.darkBg : AppColors.lightBg,
     textTheme: CupertinoTextThemeData(
       textStyle: TextStyle(
-        color: isDark ? Colors.white : const Color(0xFF111827),
+        color: isDark ? AppColors.darkText : AppColors.lightText,
         fontSize: 14,
       ),
     ),

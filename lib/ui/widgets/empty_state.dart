@@ -24,14 +24,23 @@ class EmptyState extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
-            Icon(icon, size: 46, color: mutedFor(context)),
-            const SizedBox(height: 14),
+            Container(
+              width: 64,
+              height: 64,
+              decoration: BoxDecoration(
+                color: surface2For(context),
+                shape: BoxShape.circle,
+                border: Border.all(color: lineColor(context)),
+              ),
+              child: Icon(icon, size: 26, color: mutedFor(context)),
+            ),
+            const SizedBox(height: 16),
             Text(
               title,
               textAlign: TextAlign.center,
               style: TextStyle(
-                fontSize: 15,
-                fontWeight: FontWeight.w600,
+                fontSize: 14,
+                fontWeight: FontWeight.w700,
                 color: textFor(context),
               ),
             ),
@@ -40,7 +49,7 @@ class EmptyState extends StatelessWidget {
               Text(
                 message!,
                 textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 13, color: mutedFor(context)),
+                style: TextStyle(fontSize: 12, height: 1.5, color: mutedFor(context)),
               ),
             ],
             if (action != null) ...<Widget>[

@@ -4,11 +4,15 @@ import 'package:provider/provider.dart';
 
 import '../core/theme.dart';
 import '../state/discover_state.dart';
+import 'kit.dart';
 import 'tabs/discover_tab.dart';
 import 'tabs/leaderboard_tab.dart';
 import 'tabs/library_tab.dart';
 import 'tabs/search_tab.dart';
 import 'widgets/mini_player.dart';
+
+/// Height left free at the bottom of tab scrolls for the floating chrome.
+const double kRootChromeSpace = 186;
 
 class RootShell extends StatefulWidget {
   const RootShell({super.key});
@@ -31,65 +35,121 @@ class _RootShellState extends State<RootShell> {
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
     return Scaffold(
       resizeToAvoidBottomInset: true,
-      body: IndexedStack(
-        index: _index,
-        children: const <Widget>[
-          SearchTab(),
-          DiscoverTab(),
-          LeaderboardTab(),
-          LibraryTab(),
-        ],
-      ),
-      bottomNavigationBar: Container(
-        color: isDark ? AppColors.darkBackground : AppColors.lightBackground,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: <Widget>[
-            const MiniPlayer(),
-            Container(
-              color: surfaceFor(context),
-              child: SafeArea(
-                top: false,
-                child: CupertinoTabBar(
-                  currentIndex: _index,
-                  onTap: (index) => setState(() => _index = index),
-                  activeColor: AppColors.accent,
-                  inactiveColor: mutedFor(context),
-                  backgroundColor: surfaceFor(context),
-                  border: Border(
-                    top: BorderSide(
-                      color: Theme.of(context).dividerColor.withValues(alpha: 0.6),
+      body: Stack(
+        children: <Widget>[
+          const Positioned.fill(child: AuroraBackground()),
+          Positioned.fill(
+            child: IndexedStack(
+              index: _index,
+              children: const <Widget>[
+                SearchTab(),
+                DiscoverTab(),
+                LeaderboardTab(),
+                LibraryTab(),
+              ],
+            ),
+          ),
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                // Soft fade so rows dissolve under the chrome (.root-chrome).
+                Container(
+                  height: 26,
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: <Color>[
+                        Colors.transparent,
+                        bgFor(context).withValues(alpha: 0.85),
+                        bgFor(context),
+                      ],
+                      stops: const <double>[0, 0.55, 1],
                     ),
                   ),
-                  items: const <BottomNavigationBarItem>[
-                    BottomNavigationBarItem(
-                      icon: Icon(Icons.search_rounded),
-                      activeIcon: Icon(Icons.search_rounded),
-                      label: '搜索',
-                    ),
-                    BottomNavigationBarItem(
-                      icon: Icon(Icons.grid_view_rounded),
-                      activeIcon: Icon(Icons.grid_view_rounded),
-                      label: '歌单',
-                    ),
-                    BottomNavigationBarItem(
-                      icon: Icon(Icons.leaderboard_rounded),
-                      activeIcon: Icon(Icons.leaderboard_rounded),
-                      label: '排行榜',
-                    ),
-                    BottomNavigationBarItem(
-                      icon: Icon(Icons.library_music_rounded),
-                      activeIcon: Icon(Icons.library_music_rounded),
-                      label: '我的',
-                    ),
-                  ],
                 ),
-              ),
+                const MiniPlayer(),
+                _AuroraTabBar(
+                  index: _index,
+                  onTap: (next) => setState(() => _index = next),
+                ),
+              ],
             ),
-          ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AuroraTabBar extends StatelessWidget {
+  const _AuroraTabBar({required this.index, required this.onTap});
+
+  final int index;
+  final ValueChanged<int> onTap;
+
+  static const List<Map<String, Object>> _tabs = <Map<String, Object>>[
+    <String, Object>{'icon': CupertinoIcons.search, 'label': '搜索'},
+    <String, Object>{'icon': CupertinoIcons.music_albums, 'label': '歌单'},
+    <String, Object>{'icon': CupertinoIcons.chart_bar, 'label': '排行榜'},
+    <String, Object>{'icon': CupertinoIcons.rectangle_stack, 'label': '我的'},
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: surfaceFor(context),
+        border: Border(top: BorderSide(color: lineColor(context))),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 5, 12, 5),
+          child: Row(
+            children: List<Widget>.generate(_tabs.length, (i) {
+              final tab = _tabs[i];
+              final active = i == index;
+              return Expanded(
+                child: Pressable(
+                  onTap: () => onTap(i),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: <Widget>[
+                      Container(
+                        width: 56,
+                        height: 27,
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(999),
+                          color: active ? accentSoftColor(context) : Colors.transparent,
+                        ),
+                        child: Icon(
+                          tab['icon'] as IconData,
+                          size: 21,
+                          color: active ? accentFor(context) : faintFor(context),
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        tab['label'] as String,
+                        style: TextStyle(
+                          fontSize: 9,
+                          fontWeight: FontWeight.w600,
+                          color: active ? accentFor(context) : faintFor(context),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }),
+          ),
         ),
       ),
     );

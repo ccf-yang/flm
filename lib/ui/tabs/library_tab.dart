@@ -1,3 +1,4 @@
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -6,10 +7,11 @@ import '../../core/theme.dart';
 import '../../models/playlist.dart';
 import '../../services/backup_service.dart';
 import '../../state/library_state.dart';
+import '../kit.dart';
+import '../root_shell.dart' show kRootChromeSpace;
 import '../screens/custom_sources_screen.dart';
 import '../screens/playlist_detail_screen.dart';
 import '../screens/settings_screen.dart';
-import '../widgets/empty_state.dart';
 
 class LibraryTab extends StatelessWidget {
   const LibraryTab({super.key});
@@ -17,101 +19,119 @@ class LibraryTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final library = context.watch<LibraryState>();
+    final top = MediaQuery.paddingOf(context).top + 10;
+
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('我的'),
-        actions: <Widget>[
-          IconButton(
-            tooltip: '自定义源',
-            onPressed: () {
-              Navigator.of(context).push(
-                MaterialPageRoute<void>(builder: (_) => const CustomSourcesScreen()),
-              );
-            },
-            icon: const Icon(Icons.extension_rounded),
-          ),
-          IconButton(
-            tooltip: '设置',
-            onPressed: () {
-              Navigator.of(context).push(
-                MaterialPageRoute<void>(builder: (_) => const SettingsScreen()),
-              );
-            },
-            icon: const Icon(Icons.settings_rounded),
-          ),
-          const SizedBox(width: 4),
-        ],
-      ),
       body: ListView(
-        padding: const EdgeInsets.only(bottom: 28),
+        padding: EdgeInsets.fromLTRB(kGutter, top, kGutter, kRootChromeSpace),
         children: <Widget>[
-          _LocalMusicCard(
+          ScreenHead(
+            overline: 'Collection / 07',
+            title: '我的',
+            subtitle: '所有喜欢的声音，都在这里。',
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                IconBtn(
+                  icon: CupertinoIcons.capsule,
+                  tooltip: '自定义源',
+                  onTap: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute<void>(builder: (_) => const CustomSourcesScreen()),
+                    );
+                  },
+                ),
+                const SizedBox(width: 8),
+                IconBtn(
+                  icon: CupertinoIcons.gear,
+                  tooltip: '设置',
+                  onTap: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute<void>(builder: (_) => const SettingsScreen()),
+                    );
+                  },
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+          _LocalMusicHero(
             count: library.localPlaylist.songs.length,
             onTap: () => _openPlaylist(context, library.localPlaylist),
             onImport: () => _importLocal(context, library),
           ),
-          SectionHeader(
+          SectionHead(
             title: '我的列表',
-            trailing: TextButton.icon(
-              onPressed: () => _createPlaylist(context, library),
-              icon: const Icon(Icons.add_rounded, size: 18),
-              label: const Text('新建'),
-            ),
+            actionLabel: '新建',
+            actionIcon: CupertinoIcons.plus,
+            onAction: () => _createPlaylist(context, library),
           ),
-          ...library.userPlaylists.map(
-            (playlist) => _PlaylistTile(
-              playlist: playlist,
-              onTap: () => _openPlaylist(context, playlist),
-              onMore: () => _showPlaylistMenu(context, library, playlist),
+          for (var i = 0; i < library.userPlaylists.length; i++)
+            _LibraryRow(
+              icon: CupertinoIcons.music_albums,
+              name: library.userPlaylists[i].name,
+              caption: '${library.userPlaylists[i].songs.length} 首',
+              last: i == library.userPlaylists.length - 1,
+              onTap: () => _openPlaylist(context, library.userPlaylists[i]),
+              onMore: () => _showPlaylistMenu(context, library, library.userPlaylists[i]),
             ),
-          ),
           if (library.userPlaylists.isEmpty)
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              padding: const EdgeInsets.fromLTRB(4, 6, 4, 10),
               child: Text(
-                '还没有自建列表，点右上角「新建」创建一个。',
-                style: TextStyle(fontSize: 13, color: mutedFor(context)),
+                '还没有自建列表，点「新建」创建一个。',
+                style: TextStyle(fontSize: 11.5, color: faintFor(context)),
               ),
             ),
-          const SectionHeader(title: '收藏与试听'),
-          _PlaylistTile(
-            playlist: library.defaultPlaylist,
-            icon: Icons.playlist_play_rounded,
+          SectionHead(title: '收藏与试听', note: '同步自本机'),
+          _LibraryRow(
+            icon: CupertinoIcons.music_note_list,
+            accentIcon: true,
+            name: library.defaultPlaylist.name,
+            caption: '${library.defaultPlaylist.songs.length} 首 · 播放时自动收录',
             onTap: () => _openPlaylist(context, library.defaultPlaylist),
           ),
-          _PlaylistTile(
-            playlist: library.lovePlaylist,
-            icon: Icons.favorite_rounded,
+          _LibraryRow(
+            icon: CupertinoIcons.heart_fill,
+            accentIcon: true,
+            iconColor: coralFor(context),
+            name: library.lovePlaylist.name,
+            caption: '${library.lovePlaylist.songs.length} 首',
+            last: true,
             onTap: () => _openPlaylist(context, library.lovePlaylist),
           ),
-          const SectionHeader(title: '工具'),
-          ListTile(
-            leading: const Icon(Icons.folder_open_rounded),
-            title: const Text('导入本地音乐'),
-            subtitle: const Text('从「文件」App 选择音频，复制到 flm 沙盒'),
-            onTap: () => _importLocal(context, library),
-          ),
-          ListTile(
-            leading: const Icon(Icons.ios_share_rounded),
-            title: const Text('导出备份'),
-            subtitle: const Text('列表 + 自定义源 + 设置，生成到 Documents'),
-            onTap: () => _exportBackup(context, context.read<BackupService>()),
-          ),
-          ListTile(
-            leading: const Icon(Icons.restore_rounded),
-            title: const Text('导入备份'),
-            subtitle: const Text('恢复列表、自定义源和设置'),
-            onTap: () => _importBackup(context, context.read<BackupService>()),
-          ),
-          ListTile(
-            leading: const Icon(Icons.extension_rounded),
-            title: const Text('自定义源'),
-            subtitle: const Text('管理用于获取在线播放链接的 .js 脚本'),
-            onTap: () {
-              Navigator.of(context).push(
-                MaterialPageRoute<void>(builder: (_) => const CustomSourcesScreen()),
-              );
-            },
+          SectionHead(title: '工具', note: '数据与音源'),
+          _ToolsGrid(
+            children: <Widget>[
+              _ToolCard(
+                icon: CupertinoIcons.folder,
+                title: '导入本地音乐',
+                caption: '从「文件」选择音频',
+                onTap: () => _importLocal(context, library),
+              ),
+              _ToolCard(
+                icon: CupertinoIcons.square_arrow_up,
+                title: '导出备份',
+                caption: '列表、音源与设置',
+                onTap: () => _exportBackup(context, context.read<BackupService>()),
+              ),
+              _ToolCard(
+                icon: CupertinoIcons.square_arrow_down,
+                title: '导入备份',
+                caption: '恢复本机数据',
+                onTap: () => _importBackup(context, context.read<BackupService>()),
+              ),
+              _ToolCard(
+                icon: CupertinoIcons.capsule,
+                title: '自定义源',
+                caption: '管理 .js 播放脚本',
+                onTap: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute<void>(builder: (_) => const CustomSourcesScreen()),
+                  );
+                },
+              ),
+            ],
           ),
         ],
       ),
@@ -127,34 +147,16 @@ class LibraryTab extends StatelessWidget {
   }
 
   Future<void> _createPlaylist(BuildContext context, LibraryState library) async {
-    final controller = TextEditingController();
-    final name = await showDialog<String>(
-      context: context,
-      builder: (dialogContext) {
-        return AlertDialog(
-          title: const Text('新建列表'),
-          content: TextField(
-            controller: controller,
-            autofocus: true,
-            decoration: const InputDecoration(hintText: '列表名称'),
-            onSubmitted: (value) => Navigator.pop(dialogContext, value),
-          ),
-          actions: <Widget>[
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('取消'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(dialogContext, controller.text),
-              child: const Text('创建'),
-            ),
-          ],
-        );
-      },
+    final name = await flmInputDialog(
+      context,
+      title: '新建列表',
+      message: '给这个列表起一个名字。',
+      placeholder: '列表名称',
+      confirmLabel: '创建',
     );
-    controller.dispose();
     if (name == null || name.trim().isEmpty) return;
     library.createPlaylist(name.trim());
+    flmToast(context, '已创建「${name.trim()}」');
   }
 
   Future<void> _showPlaylistMenu(
@@ -162,51 +164,45 @@ class LibraryTab extends StatelessWidget {
     LibraryState library,
     Playlist playlist,
   ) async {
-    await showModalBottomSheet<void>(
-      context: context,
-      showDragHandle: true,
-      builder: (sheetContext) {
-        return SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: <Widget>[
-              ListTile(
-                leading: const Icon(Icons.edit_rounded),
-                title: const Text('重命名'),
-                onTap: () async {
-                  Navigator.pop(sheetContext);
-                  await _renamePlaylist(context, library, playlist);
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.delete_outline_rounded, color: AppColors.danger),
-                title: const Text('删除列表', style: TextStyle(color: AppColors.danger)),
-                onTap: () async {
-                  Navigator.pop(sheetContext);
-                  final confirmed = await showDialog<bool>(
-                    context: context,
-                    builder: (dialogContext) => AlertDialog(
-                      title: const Text('删除列表'),
-                      content: Text('确定要删除「${playlist.name}」及其中的所有歌曲吗？'),
-                      actions: <Widget>[
-                        TextButton(
-                          onPressed: () => Navigator.pop(dialogContext, false),
-                          child: const Text('取消'),
-                        ),
-                        FilledButton(
-                          onPressed: () => Navigator.pop(dialogContext, true),
-                          child: const Text('删除'),
-                        ),
-                      ],
-                    ),
-                  );
-                  if (confirmed == true) library.deletePlaylist(playlist.id);
-                },
-              ),
-            ],
-          ),
-        );
-      },
+    await showFlmSheet<void>(
+      context,
+      title: playlist.name,
+      child: Builder(
+        builder: (sheetContext) => Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            SheetAction(
+              icon: CupertinoIcons.doc,
+              label: '重命名',
+              onTap: () {
+                Navigator.pop(sheetContext);
+                _renamePlaylist(context, library, playlist);
+              },
+            ),
+            SheetAction(
+              icon: CupertinoIcons.trash,
+              label: '删除列表',
+              danger: true,
+              onTap: () async {
+                Navigator.pop(sheetContext);
+                final confirmed = await flmConfirmDialog(
+                  context,
+                  title: '删除列表',
+                  message:
+                      '确定要删除「${playlist.name}」及其中的 ${playlist.songs.length} 首歌曲吗？此操作不可撤销。',
+                  confirmLabel: '删除',
+                  danger: true,
+                );
+                if (confirmed) {
+                  library.deletePlaylist(playlist.id);
+                  flmToast(context, '已删除「${playlist.name}」');
+                }
+              },
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
     );
   }
 
@@ -215,30 +211,13 @@ class LibraryTab extends StatelessWidget {
     LibraryState library,
     Playlist playlist,
   ) async {
-    final controller = TextEditingController(text: playlist.name);
-    final name = await showDialog<String>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('重命名列表'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(hintText: '列表名称'),
-          onSubmitted: (value) => Navigator.pop(dialogContext, value),
-        ),
-        actions: <Widget>[
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(dialogContext, controller.text),
-            child: const Text('保存'),
-          ),
-        ],
-      ),
+    final name = await flmInputDialog(
+      context,
+      title: '重命名列表',
+      message: '修改后会立即更新列表名称。',
+      initialValue: playlist.name,
+      confirmLabel: '保存',
     );
-    controller.dispose();
     if (name == null || name.trim().isEmpty) return;
     library.renamePlaylist(playlist.id, name.trim());
   }
@@ -247,14 +226,10 @@ class LibraryTab extends StatelessWidget {
     try {
       final count = await library.importLocalMusic();
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(count == 0 ? '没有导入任何歌曲' : '已导入 $count 首本地歌曲')),
-      );
+      flmToast(context, count == 0 ? '没有导入任何歌曲' : '已导入 $count 首本地歌曲');
     } catch (error) {
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('导入失败: $error')),
-      );
+      flmToast(context, '导入失败: $error');
     }
   }
 
@@ -262,32 +237,20 @@ class LibraryTab extends StatelessWidget {
     try {
       final path = await backup.exportToFile();
       if (!context.mounted) return;
-      await showDialog<void>(
-        context: context,
-        builder: (dialogContext) => AlertDialog(
-          title: const Text('备份已生成'),
-          content: SelectableText(path),
-
-          actions: <Widget>[
-            TextButton(
-              onPressed: () {
-                Clipboard.setData(ClipboardData(text: path));
-                Navigator.pop(dialogContext);
-              },
-              child: const Text('复制路径'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('好'),
-            ),
-          ],
-        ),
+      final copy = await flmConfirmDialog(
+        context,
+        title: '备份已生成',
+        message: path,
+        cancelLabel: '关闭',
+        confirmLabel: '复制路径',
       );
+      if (copy) {
+        Clipboard.setData(ClipboardData(text: path));
+        if (context.mounted) flmToast(context, '已复制备份路径');
+      }
     } catch (error) {
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('导出失败: $error')),
-      );
+      flmToast(context, '导出失败: $error');
     }
   }
 
@@ -301,70 +264,16 @@ class LibraryTab extends StatelessWidget {
         '${result.sources} 个自定义源',
         if (result.settings) '设置',
       ];
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('已恢复 ${parts.join('、')}')),
-      );
+      flmToast(context, '已恢复 ${parts.join('、')}');
     } catch (error) {
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('导入失败: $error')),
-      );
+      flmToast(context, '导入失败: $error');
     }
   }
 }
 
-class _PlaylistTile extends StatelessWidget {
-  const _PlaylistTile({
-    required this.playlist,
-    required this.onTap,
-    this.onMore,
-    this.icon,
-  });
-
-  final Playlist playlist;
-  final VoidCallback onTap;
-  final VoidCallback? onMore;
-  final IconData? icon;
-
-  @override
-  Widget build(BuildContext context) {
-    return ListTile(
-      onTap: onTap,
-      leading: Container(
-        width: 42,
-        height: 42,
-        decoration: BoxDecoration(
-          color: surfaceHighFor(context),
-          borderRadius: BorderRadius.circular(10),
-        ),
-        child: Icon(
-          icon ?? Icons.queue_music_rounded,
-          color: AppColors.accent,
-        ),
-      ),
-      title: Text(
-        playlist.name,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: TextStyle(
-          fontSize: 15,
-          fontWeight: FontWeight.w600,
-          color: textFor(context),
-        ),
-      ),
-      subtitle: Text('${playlist.songs.length} 首'),
-      trailing: onMore == null
-          ? const Icon(Icons.chevron_right_rounded)
-          : IconButton(
-              onPressed: onMore,
-              icon: const Icon(Icons.more_horiz_rounded),
-            ),
-    );
-  }
-}
-
-class _LocalMusicCard extends StatelessWidget {
-  const _LocalMusicCard({
+class _LocalMusicHero extends StatelessWidget {
+  const _LocalMusicHero({
     required this.count,
     required this.onTap,
     required this.onImport,
@@ -376,66 +285,312 @@ class _LocalMusicCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-      child: GestureDetector(
-        onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.all(18),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(20),
-            gradient: const LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: <Color>[Color(0xFF0F766E), Color(0xFF14B8A6)],
-            ),
+    return Pressable(
+      onTap: onTap,
+      child: Container(
+        constraints: const BoxConstraints(minHeight: 142),
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(25),
+          gradient: const LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: <Color>[Color(0xFF0B5F59), Color(0xFF0E9384), Color(0xFF54D8B7)],
+            stops: <double>[0, 0.49, 1],
           ),
+          boxShadow: const <BoxShadow>[
+            BoxShadow(
+              color: Color(0x380E9384),
+              blurRadius: 50,
+              offset: Offset(0, 22),
+            ),
+          ],
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: Stack(
+          children: <Widget>[
+            Positioned(
+              right: -48,
+              top: -72,
+              child: _HeroRing(size: 180),
+            ),
+            Positioned(
+              right: -18,
+              top: -38,
+              child: _HeroRing(size: 110),
+            ),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                const Text(
+                  'ON THIS DEVICE',
+                  style: TextStyle(
+                    fontSize: 8,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 1.44,
+                    color: Color(0xA8FFFFFF),
+                  ),
+                ),
+                const SizedBox(height: 7),
+                const Text(
+                  '本地音乐',
+                  style: TextStyle(
+                    fontSize: 26,
+                    height: 1.1,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: -1.17,
+                    color: Colors.white,
+                  ),
+                ),
+                const SizedBox(height: 5),
+                Text(
+                  '$count 首 · 直接从设备文件导入',
+                  style: const TextStyle(
+                    fontSize: 10.5,
+                    color: Color(0xABFFFFFF),
+                  ),
+                ),
+              ],
+            ),
+            Positioned(
+              right: 16,
+              bottom: 16,
+              child: Pressable(
+                onTap: onImport,
+                child: Container(
+                  height: 32,
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.14),
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(color: Colors.white.withValues(alpha: 0.22)),
+                  ),
+                  child: const Text(
+                    '导入',
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.white,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _HeroRing extends StatelessWidget {
+  const _HeroRing({required this.size});
+
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        border: Border.all(color: Colors.white.withValues(alpha: 0.18)),
+      ),
+    );
+  }
+}
+
+class _LibraryRow extends StatelessWidget {
+  const _LibraryRow({
+    required this.icon,
+    required this.name,
+    required this.caption,
+    required this.onTap,
+    this.onMore,
+    this.last = false,
+    this.accentIcon = false,
+    this.iconColor,
+  });
+
+  final IconData icon;
+  final String name;
+  final String caption;
+  final VoidCallback onTap;
+  final VoidCallback? onMore;
+  final bool last;
+  final bool accentIcon;
+  final Color? iconColor;
+
+  @override
+  Widget build(BuildContext context) {
+    return Pressable(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 9),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(13),
+          border: Border(
+            bottom: last ? BorderSide.none : BorderSide(color: lineColor(context)),
+          ),
+        ),
+        child: Row(
+          children: <Widget>[
+            Container(
+              width: 42,
+              height: 42,
+              decoration: BoxDecoration(
+                color: accentIcon ? accentSoftColor(context) : surface2For(context),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Icon(
+                icon,
+                size: 19,
+                color: iconColor ?? accentFor(context),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text(
+                    name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: textFor(context),
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    caption,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 10, color: faintFor(context)),
+                  ),
+                ],
+              ),
+            ),
+            if (onMore != null)
+              Pressable(
+                onTap: onMore,
+                child: SizedBox(
+                  width: 30,
+                  height: 30,
+                  child: Icon(
+                    CupertinoIcons.ellipsis,
+                    size: 15,
+                    color: faintFor(context),
+                  ),
+                ),
+              )
+            else
+              Icon(CupertinoIcons.chevron_right, size: 14, color: faintFor(context)),
+            const SizedBox(width: 2),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ToolsGrid extends StatelessWidget {
+  const _ToolsGrid({required this.children});
+
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    final rows = <Widget>[];
+    for (var i = 0; i < children.length; i += 2) {
+      rows.add(
+        Padding(
+          padding: EdgeInsets.only(bottom: i + 2 < children.length ? 9 : 0),
           child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: <Widget>[
-              Container(
-                width: 52,
-                height: 52,
-                decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.16),
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: const Icon(Icons.folder_special_rounded, color: Colors.white, size: 28),
-              ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: <Widget>[
-                    const Text(
-                      '本地音乐',
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.w700,
-                        color: Colors.white,
-                      ),
-                    ),
-                    const SizedBox(height: 3),
-                    Text(
-                      '$count 首 · 直接从设备文件导入',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: Colors.white.withValues(alpha: 0.82),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              TextButton(
-                onPressed: onImport,
-                style: TextButton.styleFrom(
-                  backgroundColor: Colors.white.withValues(alpha: 0.16),
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                ),
-                child: const Text('导入'),
-              ),
+              Expanded(child: children[i]),
+              const SizedBox(width: 9),
+              if (i + 1 < children.length)
+                Expanded(child: children[i + 1])
+              else
+                const Expanded(child: SizedBox()),
             ],
           ),
+        ),
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.only(top: 10),
+      child: Column(children: rows),
+    );
+  }
+}
+
+class _ToolCard extends StatelessWidget {
+  const _ToolCard({
+    required this.icon,
+    required this.title,
+    required this.caption,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String title;
+  final String caption;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Pressable(
+      onTap: onTap,
+      child: Container(
+        constraints: const BoxConstraints(minHeight: 92),
+        padding: const EdgeInsets.all(13),
+        decoration: BoxDecoration(
+          color: surfaceFor(context),
+          borderRadius: BorderRadius.circular(17),
+          border: Border.all(color: lineColor(context)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Container(
+              width: 30,
+              height: 30,
+              decoration: BoxDecoration(
+                color: accentSoftColor(context),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Icon(icon, size: 15, color: accentFor(context)),
+            ),
+            const SizedBox(height: 9),
+            Text(
+              title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 11.5,
+                fontWeight: FontWeight.w600,
+                color: textFor(context),
+              ),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              caption,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 9,
+                height: 1.4,
+                color: faintFor(context),
+              ),
+            ),
+          ],
         ),
       ),
     );

@@ -1,3 +1,4 @@
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -6,9 +7,10 @@ import '../../models/playlist.dart';
 import '../../models/song.dart';
 import '../../state/library_state.dart';
 import '../../state/player_state.dart';
+import '../kit.dart';
+import '../widgets/active_song_tile.dart';
 import '../widgets/empty_state.dart';
 import '../widgets/song_actions_sheet.dart';
-import '../widgets/active_song_tile.dart';
 
 class PlaylistDetailScreen extends StatefulWidget {
   const PlaylistDetailScreen({super.key, required this.playlistId});
@@ -38,8 +40,26 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     final playlist = library.byId(widget.playlistId);
     if (playlist == null) {
       return Scaffold(
-        appBar: AppBar(title: const Text('列表')),
-        body: const EmptyState(title: '列表不存在', icon: Icons.queue_music_rounded),
+        body: Stack(
+          children: <Widget>[
+            Positioned.fill(child: AuroraBackground(deep: true)),
+            const Positioned.fill(
+              child: EmptyState(title: '列表不存在', icon: CupertinoIcons.music_note_list),
+            ),
+            Positioned(
+              left: 0,
+              right: 0,
+              top: 0,
+              child: FlmNavBar(
+                leading: IconBtn(
+                  icon: CupertinoIcons.chevron_left,
+                  onTap: () => Navigator.of(context).maybePop(),
+                ),
+                title: '列表',
+              ),
+            ),
+          ],
+        ),
       );
     }
 
@@ -48,120 +68,109 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
         : playlist.songs;
 
     return Scaffold(
-      appBar: AppBar(
-        leading: _selecting
-            ? IconButton(
-                onPressed: _exitSelection,
-                icon: const Icon(Icons.close_rounded),
-              )
-            : null,
-        title: Text(
-          _selecting ? '已选择 ${_selected.length} 首' : playlist.name,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        ),
-        actions: _selecting
-            ? <Widget>[
-                IconButton(
-                  tooltip: '全选',
-                  onPressed: () {
-                    setState(() {
-                      if (_selected.length == songs.length) {
-                        _selected.clear();
-                      } else {
-                        _selected
-                          ..clear()
-                          ..addAll(songs.map((song) => song.id));
-                      }
-                    });
-                  },
-                  icon: const Icon(Icons.select_all_rounded),
-                ),
-                IconButton(
-                  tooltip: '添加到列表',
-                  onPressed: _selected.isEmpty
-                      ? null
-                      : () {
-                          showSongsToPlaylist(
-                            context,
-                            songs.where((song) => _selected.contains(song.id)).toList(),
-                          );
-                          _exitSelection();
-                        },
-                  icon: const Icon(Icons.playlist_add_rounded),
-                ),
-                IconButton(
-                  tooltip: '删除',
-                  onPressed: _selected.isEmpty
-                      ? null
-                      : () => _deleteSelected(playlist, songs),
-                  icon: const Icon(Icons.delete_outline_rounded),
-                ),
-                const SizedBox(width: 4),
-              ]
-            : _reorderMode
-                ? <Widget>[
-                    IconButton(
-                      tooltip: '完成',
-                      onPressed: () => setState(() => _reorderMode = false),
-                      icon: const Icon(Icons.check_rounded),
-                    ),
-                    const SizedBox(width: 4),
-                  ]
-                : <Widget>[
-                    IconButton(
-                      tooltip: '搜索',
-                      onPressed: () {
-                        setState(() => _showSearch = !_showSearch);
-                        if (!_showSearch) {
-                          _searchController.clear();
-                        }
-                      },
-                      icon: Icon(_showSearch ? Icons.search_off_rounded : Icons.search_rounded),
-                    ),
-                    IconButton(
-                      tooltip: '播放全部',
-                      onPressed: playlist.songs.isEmpty ? null : () => _playAll(playlist),
-                      icon: const Icon(Icons.play_circle_fill_rounded),
-                    ),
-                    IconButton(
-                      tooltip: '更多',
-                      onPressed: () => _showMoreMenu(playlist),
-                      icon: const Icon(Icons.more_horiz_rounded),
-                    ),
-                    const SizedBox(width: 4),
-                  ],
-      ),
-      body: Column(
+      body: Stack(
         children: <Widget>[
-          if (_showSearch)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
-              child: TextField(
-                controller: _searchController,
-                autofocus: true,
-                onChanged: (_) => setState(() {}),
-                decoration: InputDecoration(
-                  hintText: '在列表中搜索',
-                  prefixIcon: const Icon(Icons.search_rounded),
-                  filled: true,
-                  fillColor: surfaceHighFor(context),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide.none,
+          Positioned.fill(child: AuroraBackground(deep: true)),
+          SafeArea(
+            bottom: false,
+            child: Column(
+              children: <Widget>[
+                FlmNavBar(
+                  leading: IconBtn(
+                    icon: _selecting ? CupertinoIcons.xmark_circle_fill : CupertinoIcons.chevron_left,
+                    onTap: _selecting ? _exitSelection : () => Navigator.of(context).maybePop(),
                   ),
-                  contentPadding: const EdgeInsets.symmetric(vertical: 10),
+                  title: _selecting ? '已选择 ${_selected.length} 首' : playlist.name,
+                  trailing: _buildTrailing(playlist, songs),
                 ),
+                if (_showSearch && !_selecting)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(kGutter, 2, kGutter, 8),
+                      child: SearchField(
+                        controller: _searchController,
+                        hint: '在列表中搜索',
+                        compact: true,
+                        autofocus: true,
+                        onChanged: (_) => setState(() {}),
+                        onClear: () {
+                          _searchController.clear();
+                          setState(() {});
+                        },
+                      ),
+                    ),
+                Expanded(
+                  child: _reorderMode
+                      ? _buildReorderList(playlist, library)
+                      : _buildList(playlist, songs, library),
+                ),
+              ],
+            ),
+          ),
+          if (_selecting)
+            Positioned(
+              left: kGutter,
+              right: kGutter,
+              bottom: MediaQuery.paddingOf(context).bottom + 16,
+              child: _SelectionBar(
+                count: _selected.length,
+                total: songs.length,
+                onSelectAll: () {
+                  setState(() {
+                    if (_selected.length == songs.length) {
+                      _selected.clear();
+                    } else {
+                      _selected
+                        ..clear()
+                        ..addAll(songs.map((song) => song.id));
+                    }
+                  });
+                },
+                onAdd: _selected.isEmpty
+                    ? null
+                    : () {
+                        showSongsToPlaylist(
+                          context,
+                          songs.where((song) => _selected.contains(song.id)).toList(),
+                        );
+                        _exitSelection();
+                      },
+                onDelete: _selected.isEmpty
+                    ? null
+                    : () => _deleteSelected(playlist, songs),
               ),
             ),
-          Expanded(
-            child: _reorderMode
-                ? _buildReorderList(playlist, library)
-                : _buildList(playlist, songs, library),
-          ),
         ],
       ),
     );
+  }
+
+  List<Widget> _buildTrailing(Playlist playlist, List<Song> songs) {
+    if (_selecting) return const <Widget>[];
+    if (_reorderMode) {
+      return <Widget>[
+        IconBtn(
+          icon: CupertinoIcons.check_mark,
+          tooltip: '完成',
+          onTap: () => setState(() => _reorderMode = false),
+        ),
+      ];
+    }
+    return <Widget>[
+      IconBtn(
+        icon: _showSearch ? CupertinoIcons.xmark_circle_fill : CupertinoIcons.search,
+        tooltip: '搜索',
+        onTap: () {
+          setState(() => _showSearch = !_showSearch);
+          if (!_showSearch) _searchController.clear();
+        },
+      ),
+      const SizedBox(width: 6),
+      IconBtn(
+        icon: CupertinoIcons.ellipsis,
+        tooltip: '更多',
+        onTap: () => _showMoreMenu(playlist),
+      ),
+    ];
   }
 
   Widget _buildList(
@@ -175,72 +184,80 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
         message: playlist.id == 'local'
             ? '点击下方按钮从设备导入本地音乐'
             : '去搜索歌曲，然后添加到这个列表',
-        icon: Icons.queue_music_rounded,
+        icon: _playlistIcon(playlist),
         action: playlist.id == 'local'
-            ? FilledButton.icon(
-                onPressed: () => _importLocal(),
-                icon: const Icon(Icons.folder_open_rounded),
-                label: const Text('导入本地音乐'),
+            ? AuroraButton(
+                label: '导入本地音乐',
+                icon: CupertinoIcons.folder,
+                onTap: () => _importLocal(),
               )
             : null,
       );
     }
     if (songs.isEmpty) {
-      return const EmptyState(title: '没有匹配的歌曲', icon: Icons.search_off_rounded);
+      return const EmptyState(title: '没有匹配的歌曲', icon: CupertinoIcons.search);
     }
-    return ListView.builder(
-      itemCount: songs.length + 1,
-      itemBuilder: (context, index) {
-        if (index == 0) {
-          return _PlaylistHeader(
+    return CustomScrollView(
+      physics: const BouncingScrollPhysics(),
+      slivers: <Widget>[
+        SliverToBoxAdapter(
+          child: _PlaylistHero(
             playlist: playlist,
+            icon: _playlistIcon(playlist),
             onPlayAll: () => _playAll(playlist),
             onShuffle: () => _shuffle(playlist),
-            onImportLocal: playlist.id == 'local'
-                ? () {
-                    _importLocal();
-                  }
-                : null,
-          );
-        }
-        final songIndex = index - 1;
-        final song = songs[songIndex];
-        return ActiveSongTile(
-          song: song,
-          index: songIndex,
-          selected: _selected.contains(song.id),
-          selectionMode: _selecting,
-          onTap: () {
-            if (_selecting) {
-              _toggleSelect(song);
-            } else {
-              context.read<PlayerController>().playSong(
-                    song,
-                    queue: songs,
-                    index: songIndex,
-                  );
-            }
-          },
-          onLongPress: () {
-            if (_selecting) {
-              _toggleSelect(song);
-            } else {
-              setState(() {
-                _selecting = true;
-                _selected.add(song.id);
-              });
-            }
-          },
-          onMore: () => showSongActions(context, song, queue: songs, index: songIndex),
-        );
-      },
+            onImportLocal: playlist.id == 'local' ? () => _importLocal() : null,
+          ),
+        ),
+        SliverPadding(
+          padding: EdgeInsets.fromLTRB(kGutter, 4, kGutter, _selecting ? 96 : 28),
+          sliver: SliverList(
+            delegate: SliverChildBuilderDelegate(
+              (context, index) {
+                final songIndex = index;
+                final song = songs[songIndex];
+                return ActiveSongTile(
+                  song: song,
+                  index: songIndex,
+                  ranked: true,
+                  selected: _selected.contains(song.id),
+                  selectionMode: _selecting,
+                  onTap: () {
+                    if (_selecting) {
+                      _toggleSelect(song);
+                    } else {
+                      context.read<PlayerController>().playSong(
+                            song,
+                            queue: songs,
+                            index: songIndex,
+                          );
+                    }
+                  },
+                  onLongPress: () {
+                    if (_selecting) {
+                      _toggleSelect(song);
+                    } else {
+                      setState(() {
+                        _selecting = true;
+                        _selected.add(song.id);
+                      });
+                    }
+                  },
+                  onMore: () => showSongActions(context, song, queue: songs, index: songIndex),
+                );
+              },
+              childCount: songs.length,
+            ),
+          ),
+        ),
+      ],
     );
   }
 
   Widget _buildReorderList(Playlist playlist, LibraryState library) {
     return ReorderableListView.builder(
       buildDefaultDragHandles: false,
-      padding: const EdgeInsets.only(bottom: 24),
+      padding: EdgeInsets.fromLTRB(kGutter, 6, kGutter, 28),
       itemCount: playlist.songs.length,
       // Flutter 3.41 deprecates onReorder in favour of onReorderItem; keeping
       // onReorder keeps compatibility with older Flutter 3.2x SDKs.
@@ -252,20 +269,37 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
         final song = playlist.songs[index];
         return KeyedSubtree(
           key: ValueKey<String>('${song.source}:${song.id}'),
-          child: ActiveSongTile(
-            song: song,
-            index: index,
-            trailing: ReorderableDragStartListener(
+          child: Padding(
+            padding: const EdgeInsets.only(bottom: 6),
+            child: ActiveSongTile(
+              song: song,
               index: index,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-                child: Icon(Icons.drag_handle_rounded, color: mutedFor(context)),
+              ranked: true,
+              trailing: ReorderableDragStartListener(
+                index: index,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+                  child: Icon(CupertinoIcons.bars, color: mutedFor(context)),
+                ),
               ),
             ),
           ),
         );
       },
     );
+  }
+
+  IconData _playlistIcon(Playlist playlist) {
+    switch (playlist.id) {
+      case 'love':
+        return CupertinoIcons.heart_fill;
+      case 'local':
+        return CupertinoIcons.folder;
+      case 'default':
+        return CupertinoIcons.music_note_list;
+      default:
+        return CupertinoIcons.music_albums;
+    }
   }
 
   void _toggleSelect(Song song) {
@@ -301,38 +335,24 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     try {
       final count = await context.read<LibraryState>().importLocalMusic();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(count == 0 ? '没有导入任何歌曲' : '已导入 $count 首本地歌曲')),
-      );
+      flmToast(context, count == 0 ? '没有导入任何歌曲' : '已导入 $count 首本地歌曲');
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('导入失败: $error')),
-      );
+      flmToast(context, '导入失败: $error');
     }
   }
 
   Future<void> _deleteSelected(Playlist playlist, List<Song> songs) async {
     final songsToDelete = songs.where((song) => _selected.contains(song.id)).toList();
     if (songsToDelete.isEmpty) return;
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('删除歌曲'),
-        content: Text('确定要从「${playlist.name}」中删除所选的 ${songsToDelete.length} 首歌曲吗？'),
-        actions: <Widget>[
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('删除'),
-          ),
-        ],
-      ),
+    final confirmed = await flmConfirmDialog(
+      context,
+      title: '删除歌曲',
+      message: '确定要从「${playlist.name}」中删除所选的 ${songsToDelete.length} 首歌曲吗？',
+      confirmLabel: '删除',
+      danger: true,
     );
-    if (confirmed != true || !mounted) return;
+    if (!confirmed || !mounted) return;
     context.read<LibraryState>().removeSongs(
           playlist.id,
           songsToDelete.map((song) => song.id).toSet(),
@@ -341,158 +361,121 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   }
 
   Future<void> _showMoreMenu(Playlist playlist) async {
-    await showModalBottomSheet<void>(
-      context: context,
-      showDragHandle: true,
-      builder: (sheetContext) {
-        return SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: <Widget>[
-              if (!playlist.isBuiltIn) ...<Widget>[
-                ListTile(
-                  leading: const Icon(Icons.edit_rounded),
-                  title: const Text('重命名'),
-                  onTap: () async {
-                    Navigator.pop(sheetContext);
-                    await _rename(playlist);
-                  },
-                ),
-                ListTile(
-                  leading: const Icon(Icons.delete_outline_rounded, color: AppColors.danger),
-                  title: const Text('删除列表', style: TextStyle(color: AppColors.danger)),
-                  onTap: () async {
-                    Navigator.pop(sheetContext);
-                    await _deletePlaylist(playlist);
-                  },
-                ),
-              ],
-              ListTile(
-                leading: const Icon(Icons.sort_rounded),
-                title: const Text('按歌名排序（升序）'),
-                onTap: () {
-                  context.read<LibraryState>().sortPlaylist(playlist.id, 'name', true);
-                  Navigator.pop(sheetContext);
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.sort_rounded),
-                title: const Text('按歌名排序（降序）'),
-                onTap: () {
-                  context.read<LibraryState>().sortPlaylist(playlist.id, 'name', false);
-                  Navigator.pop(sheetContext);
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.person_outline_rounded),
-                title: const Text('按艺术家排序'),
-                onTap: () {
-                  context.read<LibraryState>().sortPlaylist(playlist.id, 'singer', true);
-                  Navigator.pop(sheetContext);
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.album_outlined),
-                title: const Text('按专辑排序'),
-                onTap: () {
-                  context.read<LibraryState>().sortPlaylist(playlist.id, 'album', true);
-                  Navigator.pop(sheetContext);
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.swap_vert_rounded),
-                title: const Text('手动调整顺序'),
-                onTap: () {
-                  Navigator.pop(sheetContext);
-                  setState(() => _reorderMode = true);
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.clear_all_rounded),
-                title: const Text('清空列表'),
-                onTap: () async {
-                  Navigator.pop(sheetContext);
-                  await _clearPlaylist(playlist);
-                },
-              ),
-            ],
+    await showFlmSheet<void>(
+      context,
+      title: playlist.name,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          if (!playlist.isBuiltIn) ...<Widget>[
+            SheetAction(
+              icon: CupertinoIcons.doc,
+              label: '重命名',
+              onTap: () {
+                Navigator.pop(context);
+                _rename(playlist);
+              },
+            ),
+            SheetAction(
+              icon: CupertinoIcons.trash,
+              label: '删除列表',
+              danger: true,
+              onTap: () {
+                Navigator.pop(context);
+                _deletePlaylist(playlist);
+              },
+            ),
+          ],
+          SheetAction(
+            icon: CupertinoIcons.list_number,
+            label: '按歌名排序（升序）',
+            onTap: () {
+              context.read<LibraryState>().sortPlaylist(playlist.id, 'name', true);
+              Navigator.pop(context);
+            },
           ),
-        );
-      },
+          SheetAction(
+            icon: CupertinoIcons.list_number,
+            label: '按歌名排序（降序）',
+            onTap: () {
+              context.read<LibraryState>().sortPlaylist(playlist.id, 'name', false);
+              Navigator.pop(context);
+            },
+          ),
+          SheetAction(
+            icon: CupertinoIcons.person,
+            label: '按艺术家排序',
+            onTap: () {
+              context.read<LibraryState>().sortPlaylist(playlist.id, 'singer', true);
+              Navigator.pop(context);
+            },
+          ),
+          SheetAction(
+            icon: CupertinoIcons.music_albums,
+            label: '按专辑排序',
+            onTap: () {
+              context.read<LibraryState>().sortPlaylist(playlist.id, 'album', true);
+              Navigator.pop(context);
+            },
+          ),
+          SheetAction(
+            icon: CupertinoIcons.arrow_down,
+            label: '手动调整顺序',
+            onTap: () {
+              Navigator.pop(context);
+              setState(() => _reorderMode = true);
+            },
+          ),
+          SheetAction(
+            icon: CupertinoIcons.xmark_circle_fill,
+            label: '清空列表',
+            danger: true,
+            onTap: () {
+              Navigator.pop(context);
+              _clearPlaylist(playlist);
+            },
+          ),
+          const SizedBox(height: 8),
+        ],
+      ),
     );
   }
 
   Future<void> _rename(Playlist playlist) async {
-    final controller = TextEditingController(text: playlist.name);
-    final name = await showDialog<String>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('重命名列表'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          onSubmitted: (value) => Navigator.pop(dialogContext, value),
-        ),
-        actions: <Widget>[
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(dialogContext, controller.text),
-            child: const Text('保存'),
-          ),
-        ],
-      ),
+    final name = await flmInputDialog(
+      context,
+      title: '重命名列表',
+      placeholder: '列表名称',
+      initialValue: playlist.name,
+      confirmLabel: '保存',
     );
-    controller.dispose();
-    if (name == null || name.trim().isEmpty || !mounted) return;
-    context.read<LibraryState>().renamePlaylist(playlist.id, name.trim());
+    if (name == null || name.isEmpty || !mounted) return;
+    context.read<LibraryState>().renamePlaylist(playlist.id, name);
   }
 
   Future<void> _deletePlaylist(Playlist playlist) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('删除列表'),
-        content: Text('确定要删除「${playlist.name}」及其中的所有歌曲吗？'),
-        actions: <Widget>[
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('删除'),
-          ),
-        ],
-      ),
+    final confirmed = await flmConfirmDialog(
+      context,
+      title: '删除列表',
+      message: '确定要删除「${playlist.name}」及其中的所有歌曲吗？',
+      confirmLabel: '删除',
+      danger: true,
     );
-    if (confirmed != true) return;
+    if (!confirmed) return;
     if (!mounted) return;
     context.read<LibraryState>().deletePlaylist(playlist.id);
     Navigator.of(context).pop();
   }
 
   Future<void> _clearPlaylist(Playlist playlist) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('清空列表'),
-        content: Text('确定要清空「${playlist.name}」中的所有歌曲吗？'),
-        actions: <Widget>[
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('清空'),
-          ),
-        ],
-      ),
+    final confirmed = await flmConfirmDialog(
+      context,
+      title: '清空列表',
+      message: '确定要清空「${playlist.name}」中的所有歌曲吗？',
+      confirmLabel: '清空',
+      danger: true,
     );
-    if (confirmed != true) return;
+    if (!confirmed) return;
     if (!mounted) return;
     context.read<LibraryState>().removeSongs(
           playlist.id,
@@ -501,101 +484,201 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   }
 }
 
-class _PlaylistHeader extends StatelessWidget {
-  const _PlaylistHeader({
+class _SelectionBar extends StatelessWidget {
+  const _SelectionBar({
+    required this.count,
+    required this.total,
+    required this.onSelectAll,
+    required this.onAdd,
+    required this.onDelete,
+  });
+
+  final int count;
+  final int total;
+  final VoidCallback onSelectAll;
+  final VoidCallback? onAdd;
+  final VoidCallback? onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final allSelected = count > 0 && count == total;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
+      decoration: BoxDecoration(
+        color: surfaceFor(context),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: lineStrongColor(context)),
+        boxShadow: const <BoxShadow>[
+          BoxShadow(color: Color(0x59000000), blurRadius: 30, offset: Offset(0, 10)),
+        ],
+      ),
+      child: Row(
+        children: <Widget>[
+          Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Text(
+                '已选 $count',
+                style: TextStyle(
+                  fontSize: 13.5,
+                  fontWeight: FontWeight.w700,
+                  color: textFor(context),
+                ),
+              ),
+              Text(
+                '共 $total 首',
+                style: TextStyle(fontSize: 10.5, color: mutedFor(context)),
+              ),
+            ],
+          ),
+          const Spacer(),
+          TextButton(
+            onPressed: onSelectAll,
+            child: Text(
+              allSelected ? '取消全选' : '全选',
+              style: TextStyle(color: accentFor(context), fontWeight: FontWeight.w600),
+            ),
+          ),
+          const SizedBox(width: 4),
+          IconBtn(
+            icon: CupertinoIcons.plus_circle_fill,
+            size: 38,
+            onTap: onAdd,
+            tooltip: '添加到列表',
+          ),
+          const SizedBox(width: 8),
+          IconBtn(
+            icon: CupertinoIcons.trash,
+            size: 38,
+            color: count == 0 ? null : coralFor(context),
+            onTap: onDelete,
+            tooltip: '删除',
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PlaylistHero extends StatelessWidget {
+  const _PlaylistHero({
     required this.playlist,
+    required this.icon,
     required this.onPlayAll,
     required this.onShuffle,
     this.onImportLocal,
   });
 
   final Playlist playlist;
+  final IconData icon;
   final VoidCallback onPlayAll;
   final VoidCallback onShuffle;
   final VoidCallback? onImportLocal;
 
   @override
   Widget build(BuildContext context) {
+    final empty = playlist.songs.isEmpty;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 14),
+      padding: EdgeInsets.fromLTRB(kGutter, 8, kGutter, 12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
           Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
             children: <Widget>[
               Container(
-                width: 86,
-                height: 86,
+                width: 118,
+                height: 118,
                 decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(18),
-                  gradient: const LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: <Color>[Color(0xFF0F766E), Color(0xFF14B8A6)],
+                  borderRadius: BorderRadius.circular(22),
+                  boxShadow: const <BoxShadow>[
+                    BoxShadow(color: Color(0x59000000), blurRadius: 26, offset: Offset(0, 14)),
+                  ],
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(22),
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: <Widget>[
+                      GradientArt(
+                        seed: 'pl:${playlist.id}:${playlist.name}',
+                        radius: 22,
+                        decorate: true,
+                        showMark: true,
+                        mark: '',
+                      ),
+                      Center(
+                        child: Icon(
+                          icon,
+                          size: 40,
+                          color: playlist.id == 'love'
+                              ? Colors.white.withValues(alpha: 0.92)
+                              : Colors.white.withValues(alpha: 0.85),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-                child: Icon(
-                  playlist.id == 'love'
-                      ? Icons.favorite_rounded
-                      : playlist.id == 'local'
-                          ? Icons.folder_special_rounded
-                          : Icons.queue_music_rounded,
-                  size: 38,
-                  color: Colors.white,
-                ),
               ),
-              const SizedBox(width: 14),
+              const SizedBox(width: 16),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: <Widget>[
+                    Overline('PLAYLIST'),
+                    const SizedBox(height: 6),
                     Text(
                       playlist.name,
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                        fontSize: 19,
-                        fontWeight: FontWeight.w700,
+                        fontSize: 20,
+                        fontWeight: FontWeight.w800,
+                        height: 1.22,
+                        letterSpacing: -0.4,
                         color: textFor(context),
                       ),
                     ),
-                    const SizedBox(height: 6),
+                    const SizedBox(height: 7),
                     Text(
                       '${playlist.songs.length} 首歌曲',
-                      style: TextStyle(fontSize: 12, color: mutedFor(context)),
+                      style: TextStyle(fontSize: 11.5, color: mutedFor(context)),
                     ),
                   ],
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 18),
           Row(
             children: <Widget>[
               Expanded(
-                child: FilledButton.icon(
-                  onPressed: playlist.songs.isEmpty ? null : onPlayAll,
-                  icon: const Icon(Icons.play_arrow_rounded),
-                  label: const Text('播放全部'),
+                child: AuroraButton(
+                  label: '播放全部',
+                  icon: CupertinoIcons.play_fill,
+                  onTap: empty ? null : onPlayAll,
+                  expand: true,
                 ),
               ),
               const SizedBox(width: 10),
-              OutlinedButton.icon(
-                onPressed: playlist.songs.isEmpty ? null : onShuffle,
-                icon: const Icon(Icons.shuffle_rounded, size: 18),
-                label: const Text('随机'),
+              IconBtn(
+                icon: CupertinoIcons.shuffle,
+                size: 44,
+                onTap: empty ? null : onShuffle,
+                tooltip: '随机播放',
               ),
               if (onImportLocal != null) ...<Widget>[
-                const SizedBox(width: 8),
-                IconButton(
+                const SizedBox(width: 10),
+                IconBtn(
+                  icon: CupertinoIcons.folder,
+                  size: 44,
+                  onTap: onImportLocal,
                   tooltip: '导入本地音乐',
-                  onPressed: onImportLocal,
-                  icon: const Icon(Icons.folder_open_rounded),
                 ),
               ],
             ],
           ),
-          const SizedBox(height: 6),
         ],
       ),
     );

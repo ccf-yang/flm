@@ -1,6 +1,6 @@
-import 'package:flutter/material.dart';
+import 'package:flutter/material.dart' hide Chip;
 
-import '../../core/theme.dart';
+import '../kit.dart';
 
 const List<Map<String, String>> kSourceOptions = <Map<String, String>>[
   <String, String>{'id': 'all', 'name': '聚合'},
@@ -17,7 +17,7 @@ class SourceChips extends StatelessWidget {
     required this.value,
     required this.onChanged,
     this.options = kSourceOptions,
-    this.padding = const EdgeInsets.symmetric(horizontal: 16),
+    this.padding = const EdgeInsets.symmetric(horizontal: kGutter),
   });
 
   final String value;
@@ -27,38 +27,16 @@ class SourceChips extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      height: 38,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        padding: padding,
-        itemCount: options.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 8),
-        itemBuilder: (context, index) {
-          final option = options[index];
-          final active = option['id'] == value;
-          return GestureDetector(
-            onTap: () => onChanged(option['id']!),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 160),
-              padding: const EdgeInsets.symmetric(horizontal: 14),
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
-                color: active ? AppColors.accent : surfaceHighFor(context),
-                borderRadius: BorderRadius.circular(999),
-              ),
-              child: Text(
-                option['name'] ?? option['id'] ?? '',
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: active ? FontWeight.w600 : FontWeight.w500,
-                  color: active ? Colors.white : textFor(context),
-                ),
-              ),
-            ),
-          );
-        },
-      ),
+    return ChipRow(
+      padding: padding,
+      children: options.map((option) {
+        final id = option['id'] ?? '';
+        return Chip(
+          label: option['name'] ?? id,
+          active: id == value,
+          onTap: () => onChanged(id),
+        );
+      }).toList(),
     );
   }
 }

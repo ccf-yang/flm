@@ -57,13 +57,13 @@ class _LyricViewState extends State<LyricView> {
       return Center(
         child: Text(
           '暂无歌词',
-          style: TextStyle(fontSize: 14, color: mutedFor(context)),
+          style: TextStyle(fontSize: 13, color: faintFor(context)),
         ),
       );
     }
     return SingleChildScrollView(
       controller: _controller,
-      padding: const EdgeInsets.symmetric(horizontal: 24),
+      padding: const EdgeInsets.symmetric(horizontal: 26),
       child: Column(
         children: <Widget>[
           const SizedBox(height: 120),
@@ -72,37 +72,50 @@ class _LyricViewState extends State<LyricView> {
             final line = entry.value;
             final active = index == widget.activeLine;
             final key = _keys.putIfAbsent(index, () => GlobalKey());
-            return InkWell(
+            return GestureDetector(
               key: key,
-              borderRadius: BorderRadius.circular(10),
+              behavior: HitTestBehavior.opaque,
               onTap: () => widget.onSeek(line.time),
               child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 10),
+                padding: const EdgeInsets.symmetric(vertical: 11),
                 child: Column(
                   children: <Widget>[
-                    Text(
-                      line.displayText,
-                      textAlign: TextAlign.center,
+                    AnimatedDefaultTextStyle(
+                      duration: const Duration(milliseconds: 220),
+                      curve: Curves.easeOutCubic,
                       style: TextStyle(
-                        fontSize: active ? 20 : 16,
+                        fontSize: active ? 20 : 15.5,
                         height: 1.35,
-                        fontWeight: active ? FontWeight.w700 : FontWeight.w500,
+                        fontWeight: active ? FontWeight.w800 : FontWeight.w500,
+                        letterSpacing: active ? -0.43 : 0,
                         color: active
-                            ? AppColors.accent
-                            : textFor(context).withValues(alpha: 0.55),
+                            ? accentFor(context)
+                            : textFor(context).withValues(alpha: 0.48),
+                        shadows: active
+                            ? <Shadow>[
+                                Shadow(
+                                  color: accentFor(context).withValues(alpha: 0.32),
+                                  blurRadius: 18,
+                                ),
+                              ]
+                            : const <Shadow>[],
+                      ),
+                      child: Text(
+                        line.displayText,
+                        textAlign: TextAlign.center,
                       ),
                     ),
                     if (line.hasTranslation) ...<Widget>[
-                      const SizedBox(height: 4),
+                      const SizedBox(height: 5),
                       Text(
                         line.translation,
                         textAlign: TextAlign.center,
                         style: TextStyle(
-                          fontSize: active ? 14 : 12.5,
-                          height: 1.35,
+                          fontSize: active ? 11 : 10.5,
+                          height: 1.45,
                           color: active
-                              ? AppColors.accent.withValues(alpha: 0.78)
-                              : mutedFor(context),
+                              ? accentFor(context).withValues(alpha: 0.62)
+                              : faintFor(context),
                         ),
                       ),
                     ],

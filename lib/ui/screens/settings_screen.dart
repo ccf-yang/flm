@@ -1,3 +1,4 @@
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -10,7 +11,7 @@ import '../../state/app_state.dart';
 import '../../state/library_state.dart';
 import '../../state/player_state.dart';
 import '../../state/source_state.dart';
-import '../widgets/empty_state.dart';
+import '../kit.dart';
 import 'custom_sources_screen.dart';
 
 class SettingsScreen extends StatelessWidget {
@@ -27,166 +28,219 @@ class SettingsScreen extends StatelessWidget {
     final settings = appState.settings;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('设置')),
-      body: ListView(
-        padding: const EdgeInsets.only(bottom: 32),
+      body: Stack(
         children: <Widget>[
-          const SectionHeader(title: '外观'),
-          ListTile(
-            leading: const Icon(Icons.brightness_6_rounded),
-            title: const Text('主题模式'),
-            subtitle: Text(_themeLabel(settings.themeMode)),
-            onTap: () => _pickOption(
-              context,
-              title: '主题模式',
-              current: settings.themeMode,
-              options: const <Map<String, String>>[
-                <String, String>{'id': 'system', 'name': '跟随系统'},
-                <String, String>{'id': 'light', 'name': '浅色'},
-                <String, String>{'id': 'dark', 'name': '深色'},
-              ],
-              onSelected: (value) => appState.setThemeMode(value),
-            ),
-          ),
-          const SectionHeader(title: '播放'),
-          ListTile(
-            leading: const Icon(Icons.high_quality_rounded),
-            title: const Text('优先音质'),
-            subtitle: Text(_qualityLabel(settings.quality)),
-            onTap: () => _pickOption(
-              context,
-              title: '优先音质',
-              current: settings.quality,
-              options: const <Map<String, String>>[
-                <String, String>{'id': '128k', 'name': '标准 128k'},
-                <String, String>{'id': '320k', 'name': '高品质 320k'},
-                <String, String>{'id': 'flac', 'name': '无损 FLAC'},
-                <String, String>{'id': 'flac24bit', 'name': '24bit FLAC'},
-              ],
-              onSelected: (value) {
-                appState.update((settings) => settings.quality = value);
-              },
-            ),
-          ),
-          ListTile(
-            leading: const Icon(Icons.repeat_rounded),
-            title: const Text('播放模式'),
-            subtitle: Text(playMode.label),
-            onTap: () async {
-              await _pickOption(
-                context,
-                title: '播放模式',
-                current: playMode.name,
-                options: PlayMode.values
-                    .map((mode) => <String, String>{'id': mode.name, 'name': mode.label})
-                    .toList(),
-                onSelected: (value) {
-                  final mode = PlayMode.values.firstWhere((item) => item.name == value);
-                  context.read<PlayerController>().setPlayMode(mode);
-                },
-              );
-            },
-          ),
-          SwitchListTile(
-            secondary: const Icon(Icons.history_rounded),
-            title: const Text('记住播放进度'),
-            subtitle: const Text('下次打开应用时恢复上次播放的歌曲和位置'),
-            value: settings.saveProgress,
-            onChanged: (value) {
-              appState.update((settings) => settings.saveProgress = value);
-            },
-          ),
-          SwitchListTile(
-            secondary: const Icon(Icons.play_circle_outline_rounded),
-            title: const Text('启动后自动播放'),
-            subtitle: const Text('恢复上次播放时立即开始播放'),
-            value: settings.autoPlayOnStart,
-            onChanged: (value) {
-              appState.update((settings) => settings.autoPlayOnStart = value);
-            },
-          ),
-          SwitchListTile(
-            secondary: const Icon(Icons.translate_rounded),
-            title: const Text('显示歌词翻译'),
-            subtitle: const Text('如果歌词提供翻译，会在原文下方显示'),
-            value: settings.showTranslation,
-            onChanged: (value) {
-              appState.update((settings) => settings.showTranslation = value);
-              context.read<PlayerController>().reloadLyrics();
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.block_rounded),
-            title: const Text('不喜欢规则'),
-            subtitle: Text('${settings.dislikedKeys.length} 条'),
-            trailing: settings.dislikedKeys.isEmpty
-                ? null
-                : TextButton(
-                    onPressed: () {
-                      appState.clearDislikes();
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('已清空不喜欢规则')),
-                      );
-                    },
-                    child: const Text('清空'),
+          Positioned.fill(child: AuroraBackground(deep: true)),
+          SafeArea(
+            bottom: false,
+            child: Column(
+              children: <Widget>[
+                FlmNavBar(
+                  leading: IconBtn(
+                    icon: CupertinoIcons.chevron_left,
+                    onTap: () => Navigator.of(context).maybePop(),
                   ),
-          ),
-          const SectionHeader(title: '数据'),
-          ListTile(
-            leading: const Icon(Icons.folder_open_rounded),
-            title: const Text('导入本地音乐'),
-            onTap: () => _importLocal(context, library),
-          ),
-          ListTile(
-            leading: const Icon(Icons.ios_share_rounded),
-            title: const Text('导出备份'),
-            subtitle: const Text('列表 + 自定义源（含 URL/脚本）+ 设置'),
-            onTap: () => _exportBackup(context, context.read<BackupService>()),
-          ),
-          ListTile(
-            leading: const Icon(Icons.restore_rounded),
-            title: const Text('导入备份'),
-            subtitle: const Text('恢复列表、自定义源和设置'),
-            onTap: () => _importBackup(context, context.read<BackupService>()),
-          ),
-          const SectionHeader(title: '音源'),
-          ListTile(
-            leading: const Icon(Icons.extension_rounded),
-            title: const Text('自定义源'),
-            subtitle: Text(_sourceSubtitle(sourceState)),
-            onTap: () {
-              Navigator.of(context).push(
-                MaterialPageRoute<void>(builder: (_) => const CustomSourcesScreen()),
-              );
-            },
-          ),
-          const SectionHeader(title: '关于'),
-          const ListTile(
-            leading: Icon(Icons.info_outline_rounded),
-            title: Text('flm'),
-            subtitle: Text('版本 1.0.0 · 基于 LX Music 音乐源协议'),
-          ),
-          ListTile(
-            leading: const Icon(Icons.code_rounded),
-            title: const Text('LX Music 项目'),
-            subtitle: const Text('github.com/lyswhut/lx-music-mobile'),
-            onTap: () async {
-              await launchUrl(
-                Uri.parse('https://github.com/lyswhut/lx-music-mobile'),
-                mode: LaunchMode.externalApplication,
-              );
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.cloud_sync_rounded),
-            title: const Text('LX 同步服务'),
-            subtitle: const Text('github.com/lyswhut/lx-music-sync-server'),
-            onTap: () async {
-              await launchUrl(
-                Uri.parse('https://github.com/lyswhut/lx-music-sync-server'),
-                mode: LaunchMode.externalApplication,
-              );
-            },
+                  title: '设置',
+                ),
+                Expanded(
+                  child: ListView(
+                    padding: const EdgeInsets.fromLTRB(kGutter, 4, kGutter, 40),
+                    children: <Widget>[
+                      _IntroCard(),
+                      SectionHead(title: '外观'),
+                      _Group(
+                        children: <Widget>[
+                          _SettingRow(
+                            icon: auroraIsDark(context)
+                                ? CupertinoIcons.moon
+                                : CupertinoIcons.sun_max,
+                            label: '主题模式',
+                            value: _themeLabel(settings.themeMode),
+                            onTap: () => _pickOption(
+                              context,
+                              title: '主题模式',
+                              current: settings.themeMode,
+                              options: const <Map<String, String>>[
+                                <String, String>{'id': 'system', 'name': '跟随系统'},
+                                <String, String>{'id': 'light', 'name': '浅色'},
+                                <String, String>{'id': 'dark', 'name': '深色'},
+                              ],
+                              onSelected: (value) => appState.setThemeMode(value),
+                            ),
+                          ),
+                        ],
+                      ),
+                      SectionHead(title: '播放'),
+                      _Group(
+                        children: <Widget>[
+                          _SettingRow(
+                            icon: CupertinoIcons.waveform,
+                            label: '优先音质',
+                            value: _qualityLabel(settings.quality),
+                            onTap: () => _pickOption(
+                              context,
+                              title: '优先音质',
+                              current: settings.quality,
+                              options: const <Map<String, String>>[
+                                <String, String>{'id': '128k', 'name': '标准 128k'},
+                                <String, String>{'id': '320k', 'name': '高品质 320k'},
+                                <String, String>{'id': 'flac', 'name': '无损 FLAC'},
+                                <String, String>{'id': 'flac24bit', 'name': '24bit FLAC'},
+                              ],
+                              onSelected: (value) {
+                                appState.update((settings) => settings.quality = value);
+                              },
+                            ),
+                          ),
+                          _SettingRow(
+                            icon: CupertinoIcons.repeat,
+                            label: '播放模式',
+                            value: playMode.label,
+                            onTap: () {
+                              _pickOption(
+                                context,
+                                title: '播放模式',
+                                current: playMode.name,
+                                options: PlayMode.values
+                                    .map((mode) =>
+                                        <String, String>{'id': mode.name, 'name': mode.label})
+                                    .toList(),
+                                onSelected: (value) {
+                                  final mode =
+                                      PlayMode.values.firstWhere((item) => item.name == value);
+                                  context.read<PlayerController>().setPlayMode(mode);
+                                },
+                              );
+                            },
+                          ),
+                          _SwitchRow(
+                            icon: CupertinoIcons.clock,
+                            label: '记住播放进度',
+                            caption: '下次打开应用时恢复上次播放的歌曲和位置',
+                            value: settings.saveProgress,
+                            onChanged: (value) {
+                              appState.update((settings) => settings.saveProgress = value);
+                            },
+                          ),
+                          _SwitchRow(
+                            icon: CupertinoIcons.play_arrow,
+                            label: '启动后自动播放',
+                            caption: '恢复上次播放时立即开始播放',
+                            value: settings.autoPlayOnStart,
+                            onChanged: (value) {
+                              appState.update((settings) => settings.autoPlayOnStart = value);
+                            },
+                          ),
+                          _SwitchRow(
+                            icon: CupertinoIcons.text_quote,
+                            label: '显示歌词翻译',
+                            caption: '如果歌词提供翻译，会在原文下方显示',
+                            value: settings.showTranslation,
+                            onChanged: (value) {
+                              appState.update((settings) => settings.showTranslation = value);
+                              context.read<PlayerController>().reloadLyrics();
+                            },
+                          ),
+                          _SettingRow(
+                            icon: CupertinoIcons.xmark_circle_fill,
+                            label: '不喜欢规则',
+                            value: '${settings.dislikedKeys.length} 条',
+                            trailing: settings.dislikedKeys.isEmpty
+                                ? null
+                                : Pressable(
+                                    onTap: () {
+                                      appState.clearDislikes();
+                                      flmToast(context, '已清空不喜欢规则');
+                                    },
+                                    child: Text(
+                                      '清空',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w600,
+                                        color: coralFor(context),
+                                      ),
+                                    ),
+                                  ),
+                            onTap: settings.dislikedKeys.isEmpty
+                                ? null
+                                : () {
+                                    appState.clearDislikes();
+                                    flmToast(context, '已清空不喜欢规则');
+                                  },
+                          ),
+                        ],
+                      ),
+                      SectionHead(title: '数据'),
+                      _Group(
+                        children: <Widget>[
+                          _SettingRow(
+                            icon: CupertinoIcons.folder,
+                            label: '导入本地音乐',
+                            onTap: () => _importLocal(context, library),
+                          ),
+                          _SettingRow(
+                            icon: CupertinoIcons.square_arrow_up,
+                            label: '导出备份',
+                            caption: '列表 + 自定义源（含 URL/脚本）+ 设置',
+                            onTap: () => _exportBackup(context, context.read<BackupService>()),
+                          ),
+                          _SettingRow(
+                            icon: CupertinoIcons.square_arrow_down,
+                            label: '导入备份',
+                            caption: '恢复列表、自定义源和设置',
+                            onTap: () => _importBackup(context, context.read<BackupService>()),
+                          ),
+                        ],
+                      ),
+                      SectionHead(title: '音源'),
+                      _Group(
+                        children: <Widget>[
+                          _SettingRow(
+                            icon: CupertinoIcons.capsule,
+                            label: '自定义源',
+                            caption: _sourceSubtitle(sourceState),
+                            onTap: () {
+                              Navigator.of(context).push(
+                                MaterialPageRoute<void>(
+                                  builder: (_) => const CustomSourcesScreen(),
+                                ),
+                              );
+                            },
+                          ),
+                        ],
+                      ),
+                      SectionHead(title: '关于'),
+                      _Group(
+                        children: <Widget>[
+                          _SettingRow(
+                            icon: CupertinoIcons.guitars,
+                            label: 'LX Music 项目',
+                            caption: 'github.com/lyswhut/lx-music-mobile',
+                            onTap: () async {
+                              await launchUrl(
+                                Uri.parse('https://github.com/lyswhut/lx-music-mobile'),
+                                mode: LaunchMode.externalApplication,
+                              );
+                            },
+                          ),
+                          _SettingRow(
+                            icon: CupertinoIcons.guitars,
+                            label: 'LX 同步服务',
+                            caption: 'github.com/lyswhut/lx-music-sync-server',
+                            onTap: () async {
+                              await launchUrl(
+                                Uri.parse('https://github.com/lyswhut/lx-music-sync-server'),
+                                mode: LaunchMode.externalApplication,
+                              );
+                            },
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
           ),
         ],
       ),
@@ -232,46 +286,25 @@ class SettingsScreen extends StatelessWidget {
     required List<Map<String, String>> options,
     required ValueChanged<String> onSelected,
   }) async {
-    await showModalBottomSheet<void>(
-      context: context,
-      showDragHandle: true,
-      builder: (sheetContext) {
-        return SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: <Widget>[
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text(
-                    title,
-                    style: TextStyle(
-                      fontSize: 17,
-                      fontWeight: FontWeight.w700,
-                      color: textFor(sheetContext),
-                    ),
-                  ),
-                ),
-              ),
-              ...options.map((option) {
-                final active = option['id'] == current;
-                return ListTile(
-                  title: Text(option['name'] ?? ''),
-                  trailing: active
-                      ? const Icon(Icons.check_rounded, color: AppColors.accent)
-                      : null,
-                  onTap: () {
-                    Navigator.pop(sheetContext);
-                    onSelected(option['id'] ?? '');
-                  },
-                );
-              }),
-              const SizedBox(height: 8),
-            ],
-          ),
-        );
-      },
+    await showFlmSheet<void>(
+      context,
+      title: title,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          ...options.map((option) {
+            return OptionRow(
+              label: option['name'] ?? '',
+              active: option['id'] == current,
+              onTap: () {
+                Navigator.pop(context);
+                onSelected(option['id'] ?? '');
+              },
+            );
+          }),
+          const SizedBox(height: 8),
+        ],
+      ),
     );
   }
 
@@ -279,14 +312,10 @@ class SettingsScreen extends StatelessWidget {
     try {
       final count = await library.importLocalMusic();
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(count == 0 ? '没有导入任何歌曲' : '已导入 $count 首本地歌曲')),
-      );
+      flmToast(context, count == 0 ? '没有导入任何歌曲' : '已导入 $count 首本地歌曲');
     } catch (error) {
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('导入失败: $error')),
-      );
+      flmToast(context, '导入失败: $error');
     }
   }
 
@@ -294,31 +323,19 @@ class SettingsScreen extends StatelessWidget {
     try {
       final path = await backup.exportToFile();
       if (!context.mounted) return;
-      await showDialog<void>(
-        context: context,
-        builder: (dialogContext) => AlertDialog(
-          title: const Text('备份已生成'),
-          content: SelectableText(path),
-          actions: <Widget>[
-            TextButton(
-              onPressed: () {
-                Clipboard.setData(ClipboardData(text: path));
-                Navigator.pop(dialogContext);
-              },
-              child: const Text('复制路径'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('好'),
-            ),
-          ],
-        ),
+      final copy = await flmConfirmDialog(
+        context,
+        title: '备份已生成',
+        message: path,
+        cancelLabel: '关闭',
+        confirmLabel: '复制路径',
       );
+      if (copy) {
+        await Clipboard.setData(ClipboardData(text: path));
+      }
     } catch (error) {
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('导出失败: $error')),
-      );
+      flmToast(context, '导出失败: $error');
     }
   }
 
@@ -332,14 +349,200 @@ class SettingsScreen extends StatelessWidget {
         '${result.sources} 个自定义源',
         if (result.settings) '设置',
       ];
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('已恢复 ${parts.join('、')}')),
-      );
+      flmToast(context, '已恢复 ${parts.join('、')}');
     } catch (error) {
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('导入失败: $error')),
-      );
+      flmToast(context, '导入失败: $error');
     }
+  }
+}
+
+class _IntroCard extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 8, bottom: 8),
+      child: Row(
+        children: <Widget>[
+          GradientArt(seed: 'flm-about', radius: 18, width: 56, height: 56, decorate: true),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(
+                  'flm',
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: -0.4,
+                    color: textFor(context),
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  '版本 1.0.0 · 基于 LX Music 音乐源协议',
+                  style: TextStyle(fontSize: 11, color: mutedFor(context)),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _Group extends StatelessWidget {
+  const _Group({required this.children});
+
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: surfaceFor(context),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: lineColor(context)),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        children: <Widget>[
+          for (var i = 0; i < children.length; i++) ...<Widget>[
+            if (i > 0)
+              Divider(height: 1, thickness: 1, indent: 52, color: lineColor(context)),
+            children[i],
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _SettingRow extends StatelessWidget {
+  const _SettingRow({
+    required this.icon,
+    required this.label,
+    this.value,
+    this.caption,
+    this.trailing,
+    this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final String? value;
+  final String? caption;
+  final Widget? trailing;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final enabled = onTap != null;
+    return Pressable(
+      onTap: onTap,
+      child: Opacity(
+        opacity: enabled ? 1 : 0.6,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 13, 12, 13),
+          child: Row(
+            children: <Widget>[
+              Icon(icon, size: 20, color: accentFor(context)),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
+                      label,
+                      style: TextStyle(
+                        fontSize: 14.5,
+                        fontWeight: FontWeight.w600,
+                        color: textFor(context),
+                      ),
+                    ),
+                    if (caption != null) ...<Widget>[
+                      const SizedBox(height: 2),
+                      Text(
+                        caption!,
+                        style: TextStyle(fontSize: 11, height: 1.4, color: mutedFor(context)),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              if (trailing != null)
+                trailing!
+              else ...<Widget>[
+                if (value != null)
+                  Text(
+                    value!,
+                    style: TextStyle(fontSize: 12.5, color: mutedFor(context)),
+                  ),
+                const SizedBox(width: 4),
+                Icon(CupertinoIcons.chevron_right, size: 15, color: faintFor(context)),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SwitchRow extends StatelessWidget {
+  const _SwitchRow({
+    required this.icon,
+    required this.label,
+    required this.value,
+    required this.onChanged,
+    this.caption,
+  });
+
+  final IconData icon;
+  final String label;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+  final String? caption;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 10, 12, 10),
+      child: Row(
+        children: <Widget>[
+          Icon(icon, size: 20, color: accentFor(context)),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 14.5,
+                    fontWeight: FontWeight.w600,
+                    color: textFor(context),
+                  ),
+                ),
+                if (caption != null) ...<Widget>[
+                  const SizedBox(height: 2),
+                  Text(
+                    caption!,
+                    style: TextStyle(fontSize: 11, height: 1.4, color: mutedFor(context)),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          CupertinoSwitch(
+            value: value,
+            activeTrackColor: accentStrongFor(context),
+            onChanged: onChanged,
+          ),
+        ],
+      ),
+    );
   }
 }

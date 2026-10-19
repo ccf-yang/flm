@@ -2,8 +2,8 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 
-import '../../core/theme.dart';
 import '../../models/song.dart';
+import '../kit.dart';
 
 class CoverArt extends StatelessWidget {
   const CoverArt({
@@ -11,11 +11,13 @@ class CoverArt extends StatelessWidget {
     this.song,
     this.size = 52,
     this.radius = 10,
+    this.showMark = false,
   });
 
   final Song? song;
   final double size;
   final double radius;
+  final bool showMark;
 
   @override
   Widget build(BuildContext context) {
@@ -57,24 +59,17 @@ class CoverArt extends StatelessWidget {
   }
 
   Widget _placeholder(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    return Container(
+    final seed = song == null
+        ? 'flm-empty'
+        : '${song!.source}:${song!.id}:${song!.name}';
+    return GradientArt(
+      seed: seed,
+      radius: radius,
       width: size,
       height: size,
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: isDark
-              ? const <Color>[Color(0xFF17324A), Color(0xFF0F2233)]
-              : const <Color>[Color(0xFFD9F5EF), Color(0xFFEAF7F4)],
-        ),
-      ),
-      child: Icon(
-        Icons.music_note_rounded,
-        size: size * 0.42,
-        color: isDark ? AppColors.accentSoft : AppColors.accent,
-      ),
+      decorate: true,
+      showMark: showMark,
+      mark: song?.source ?? '',
     );
   }
 }

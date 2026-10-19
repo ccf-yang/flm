@@ -1,3 +1,6 @@
+import 'dart:ui';
+
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -6,9 +9,11 @@ import '../../services/online_engine.dart';
 import '../../state/discover_state.dart';
 import '../../state/library_state.dart';
 import '../../state/player_state.dart';
+import '../kit.dart';
+import '../widgets/active_song_tile.dart';
 import '../widgets/empty_state.dart';
 import '../widgets/song_actions_sheet.dart';
-import '../widgets/active_song_tile.dart';
+import '../widgets/song_tile.dart' show srcShortLabel;
 
 class LeaderboardDetailScreen extends StatefulWidget {
   const LeaderboardDetailScreen({
@@ -81,190 +86,257 @@ class _LeaderboardDetailScreenState extends State<LeaderboardDetailScreen> {
     final library = context.read<LibraryState>();
     final playlist = library.createPlaylist(_state.title);
     library.addSongs(playlist.id, _state.songs);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('已收藏到「${playlist.name}」')),
-    );
+    flmToast(context, '已收藏到「${playlist.name}」');
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: Text(
-          _state.title.isEmpty ? '排行榜' : _state.title,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        ),
-        actions: <Widget>[
-          IconButton(
-            tooltip: '收藏榜单',
-            onPressed: _state.songs.isEmpty ? null : _collect,
-            icon: const Icon(Icons.playlist_add_rounded),
-          ),
-          IconButton(
-            tooltip: '播放全部',
-            onPressed: _state.songs.isEmpty ? null : _playAll,
-            icon: const Icon(Icons.play_circle_fill_rounded),
-          ),
-          const SizedBox(width: 4),
-        ],
-      ),
-      body: ListenableBuilder(
-        listenable: _state,
-        builder: (context, _) {
-          if (_state.loading && _state.songs.isEmpty) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          if (_state.error != null && _state.songs.isEmpty) {
-            return EmptyState(
-              title: '榜单加载失败',
-              message: _state.error,
-              icon: Icons.cloud_off_rounded,
-              action: FilledButton(
-                onPressed: _state.load,
-                child: const Text('重试'),
+      body: Stack(
+        children: <Widget>[
+          Positioned.fill(child: AuroraBackground(deep: true)),
+          if (widget.coverUrl.isNotEmpty)
+            Positioned.fill(
+              child: Opacity(
+                opacity: auroraIsDark(context) ? 0.30 : 0.16,
+                child: ImageFiltered(
+                  imageFilter: ImageFilter.blur(sigmaX: 46, sigmaY: 46),
+                  child: Image.network(
+                    widget.coverUrl,
+                    fit: BoxFit.cover,
+                    gaplessPlayback: true,
+                    errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                  ),
+                ),
               ),
-            );
-          }
-          if (_state.songs.isEmpty) {
-            return const EmptyState(title: '这个榜单是空的', icon: Icons.leaderboard_outlined);
-          }
-          return RefreshIndicator(
-            onRefresh: _state.load,
-            child: ListView.builder(
-              controller: _scrollController,
-              itemCount: _state.songs.length + 1 + (_state.loadingMore ? 1 : 0),
-              itemBuilder: (context, index) {
-                if (index == 0) {
-                  return _Header(state: _state, onPlayAll: _playAll, onCollect: _collect);
-                }
-                final songIndex = index - 1;
-                if (songIndex >= _state.songs.length) {
-                  return const Padding(
-                    padding: EdgeInsets.all(18),
-                    child: Center(
-                      child: SizedBox(
-                        width: 22,
-                        height: 22,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      ),
+            ),
+          Positioned.fill(
+            child: ListenableBuilder(
+              listenable: _state,
+              builder: (context, _) {
+                return RefreshIndicator(
+                  onRefresh: _state.load,
+                  color: accentFor(context),
+                  child: CustomScrollView(
+                    controller: _scrollController,
+                    physics: const AlwaysScrollableScrollPhysics(
+                      parent: BouncingScrollPhysics(),
                     ),
-                  );
-                }
-                final song = _state.songs[songIndex];
-                return ActiveSongTile(
-                  song: song,
-                  index: songIndex,
-                  onTap: () => _playSong(songIndex),
-                  onMore: () => showSongActions(
-                    context,
-                    song,
-                    queue: _state.songs,
-                    index: songIndex,
+                    slivers: <Widget>[
+                      SliverToBoxAdapter(
+                        child: _Hero(
+                          title: _state.title.isEmpty ? widget.title : _state.title,
+                          source: _state.source,
+                          coverUrl: _state.coverUrl,
+                          count: _state.songs.length,
+                          onPlayAll: _state.songs.isEmpty ? null : _playAll,
+                          onCollect: _state.songs.isEmpty ? null : _collect,
+                        ),
+                      ),
+                      if (_state.loading && _state.songs.isEmpty)
+                        const SliverToBoxAdapter(
+                          child: Padding(
+                            padding: EdgeInsets.symmetric(vertical: 48),
+                            child: Center(
+                              child: SizedBox(
+                                width: 24,
+                                height: 24,
+                                child: CircularProgressIndicator(strokeWidth: 2.4),
+                              ),
+                            ),
+                          ),
+                        )
+                      else if (_state.error != null && _state.songs.isEmpty)
+                        SliverToBoxAdapter(
+                          child: EmptyState(
+                            title: '榜单加载失败',
+                            message: _state.error,
+                            icon: CupertinoIcons.exclamationmark_shield_fill,
+                            action: AuroraButton(
+                              label: '重试',
+                              icon: CupertinoIcons.arrow_clockwise,
+                              onTap: _state.load,
+                            ),
+                          ),
+                        )
+                      else if (_state.songs.isEmpty)
+                        const SliverToBoxAdapter(
+                          child: EmptyState(
+                            title: '这个榜单是空的',
+                            icon: CupertinoIcons.chart_bar,
+                          ),
+                        )
+                      else
+                        SliverPadding(
+                          padding: const EdgeInsets.fromLTRB(kGutter, 4, kGutter, 0),
+                          sliver: SliverList(
+                            delegate: SliverChildBuilderDelegate(
+                              (context, index) {
+                                final song = _state.songs[index];
+                                return ActiveSongTile(
+                                  song: song,
+                                  index: index,
+                                  ranked: true,
+                                  onTap: () => _playSong(index),
+                                  onMore: () => showSongActions(
+                                    context,
+                                    song,
+                                    queue: _state.songs,
+                                    index: index,
+                                  ),
+                                );
+                              },
+                              childCount: _state.songs.length,
+                            ),
+                          ),
+                        ),
+                      if (_state.loadingMore)
+                        const SliverToBoxAdapter(
+                          child: Padding(
+                            padding: EdgeInsets.only(top: 14, bottom: 28),
+                            child: Center(
+                              child: SizedBox(
+                                width: 22,
+                                height: 22,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              ),
+                            ),
+                          ),
+                        )
+                      else
+                        const SliverToBoxAdapter(child: SizedBox(height: 40)),
+                    ],
                   ),
                 );
               },
             ),
-          );
-        },
+          ),
+          Positioned(
+            left: 0,
+            right: 0,
+            top: 0,
+            child: FlmNavBar(
+              leading: IconBtn(
+                icon: CupertinoIcons.chevron_left,
+                onTap: () => Navigator.of(context).maybePop(),
+              ),
+              title: _state.title.isEmpty ? '排行榜' : _state.title,
+            ),
+          ),
+        ],
       ),
     );
   }
 }
 
-class _Header extends StatelessWidget {
-  const _Header({
-    required this.state,
+class _Hero extends StatelessWidget {
+  const _Hero({
+    required this.title,
+    required this.source,
+    required this.coverUrl,
+    required this.count,
     required this.onPlayAll,
     required this.onCollect,
   });
 
-  final LeaderboardDetailState state;
-  final VoidCallback onPlayAll;
-  final VoidCallback onCollect;
+  final String title;
+  final String source;
+  final String coverUrl;
+  final int count;
+  final VoidCallback? onPlayAll;
+  final VoidCallback? onCollect;
 
   @override
   Widget build(BuildContext context) {
+    final top = MediaQuery.paddingOf(context).top;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 14),
+      padding: EdgeInsets.fromLTRB(kGutter, top + 62, kGutter, 12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
           Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
             children: <Widget>[
-              ClipRRect(
-                borderRadius: BorderRadius.circular(14),
-                child: SizedBox(
-                  width: 96,
-                  height: 96,
-                  child: state.coverUrl.isEmpty
-                      ? Container(
-                          color: surfaceHighFor(context),
-                          child: Icon(Icons.leaderboard_rounded, size: 34, color: mutedFor(context)),
-                        )
-                      : Image.network(
-                          state.coverUrl,
+              Container(
+                width: 122,
+                height: 122,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(22),
+                  boxShadow: const <BoxShadow>[
+                    BoxShadow(color: Color(0x59000000), blurRadius: 28, offset: Offset(0, 14)),
+                  ],
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(22),
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: <Widget>[
+                      GradientArt(
+                        seed: 'board:$source:$title',
+                        radius: 22,
+                        decorate: true,
+                        showMark: true,
+                        mark: srcShortLabel(source),
+                      ),
+                      if (coverUrl.isNotEmpty)
+                        Image.network(
+                          coverUrl,
                           fit: BoxFit.cover,
-                          errorBuilder: (_, __, ___) => Container(
-                            color: surfaceHighFor(context),
-                            child: Icon(Icons.leaderboard_rounded, size: 34, color: mutedFor(context)),
-                          ),
+                          errorBuilder: (_, __, ___) => const SizedBox.shrink(),
                         ),
+                    ],
+                  ),
                 ),
               ),
-              const SizedBox(width: 14),
+              const SizedBox(width: 16),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: <Widget>[
+                    SrcBadge(srcShortLabel(source), onDark: true),
+                    const SizedBox(height: 8),
                     Text(
-                      state.title,
+                      title.isEmpty ? '排行榜' : title,
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.w700,
+                        fontSize: 20,
+                        fontWeight: FontWeight.w800,
+                        height: 1.22,
+                        letterSpacing: -0.4,
                         color: textFor(context),
                       ),
                     ),
-                    const SizedBox(height: 6),
+                    const SizedBox(height: 7),
                     Text(
-                      state.source.toUpperCase(),
-                      style: const TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
-                        color: AppColors.accent,
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      '共 ${state.songs.length} 首',
-                      style: TextStyle(fontSize: 12, color: mutedFor(context)),
+                      '共 $count 首',
+                      style: TextStyle(fontSize: 11.5, color: mutedFor(context)),
                     ),
                   ],
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 18),
           Row(
             children: <Widget>[
               Expanded(
-                child: FilledButton.icon(
-                  onPressed: onPlayAll,
-                  icon: const Icon(Icons.play_arrow_rounded),
-                  label: const Text('播放全部'),
+                child: AuroraButton(
+                  label: '播放全部',
+                  icon: CupertinoIcons.play_fill,
+                  onTap: onPlayAll,
+                  expand: true,
                 ),
               ),
               const SizedBox(width: 10),
-              OutlinedButton.icon(
-                onPressed: onCollect,
-                icon: const Icon(Icons.playlist_add_rounded, size: 18),
-                label: const Text('收藏'),
+              IconBtn(
+                icon: CupertinoIcons.plus_circle_fill,
+                size: 44,
+                onTap: onCollect,
+                tooltip: '收藏榜单',
               ),
             ],
           ),
-          const SizedBox(height: 6),
         ],
       ),
     );
