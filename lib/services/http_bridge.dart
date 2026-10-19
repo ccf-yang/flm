@@ -154,6 +154,7 @@ class HttpBridge {
     } catch (error) {
       debugLog?.record('HTTP 失败 $url', <String, Object?>{
         '耗时': '${DateTime.now().difference(startedAt).inMilliseconds}ms',
+        '错误类型': error.runtimeType.toString(),
         '错误': '$error',
       });
       rethrow;

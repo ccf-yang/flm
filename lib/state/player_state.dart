@@ -12,6 +12,7 @@ import '../models/app_settings.dart';
 import '../models/lyric.dart';
 import '../models/song.dart';
 import '../services/lyric_parser.dart';
+import '../services/debug_log.dart';
 import '../services/online_engine.dart';
 import '../services/player_service.dart';
 import 'app_state.dart';
@@ -25,6 +26,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     required this.appState,
     required this.libraryState,
     required this.onlineEngine,
+    this.debugLog,
   }) {
     _subscriptions.add(
       service.positionStream.listen((position) {
@@ -63,6 +65,11 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     _progressTimer = Timer.periodic(const Duration(seconds: 5), (_) => _saveProgress());
     unawaited(_listenToAudioSession());
     _restoreLastPlayback();
+    debugLog?.record('应用启动', <String, Object?>{
+      '恢复歌曲': _current?.name,
+      '队列长度': _queue.length,
+      '活动源': sourceState.active?.name,
+    });
   }
 
   final FlmPlayerService service;
@@ -70,6 +77,11 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   final AppState appState;
   final LibraryState libraryState;
   final OnlineEngine onlineEngine;
+
+  /// When set (and its switch is on), playback decisions are mirrored to the
+  /// in-app debug page: what URL was handed to the player, why a load failed
+  /// (with stack), lifecycle and audio-interruption events.
+  final DebugLog? debugLog;
 
   final List<StreamSubscription<dynamic>> _subscriptions = <StreamSubscription<dynamic>>[];
   late final Timer _progressTimer;
@@ -136,6 +148,11 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       final session = await AudioSession.instance;
       _interruptionSubscription = session.interruptionEventStream.listen((event) {
         if (_disposed) return;
+        debugLog?.record('音频中断 ${event.begin ? "开始" : "结束"}', <String, Object?>{
+          '类型': '${event.type}',
+          '当时在播': _isPlaying,
+          '当时在加载': _loading,
+        });
         if (event.begin) {
           _resumeAfterInterruption = _isPlaying;
           if (_isPlaying) unawaited(service.pause());
@@ -154,6 +171,10 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
         }
       });
       _noisySubscription = session.becomingNoisyEventStream.listen((_) {
+        debugLog?.record('音频路线变为静音(耳机拔出等)', <String, Object?>{
+          '当时在播': _isPlaying,
+          '动作': _isPlaying ? '暂停' : '忽略',
+        });
         if (_isPlaying) unawaited(pause());
       });
     } catch (_) {
@@ -231,12 +252,20 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     _statusText = '正在获取播放链接…';
     _errorText = null;
     _notify();
+    var handedUrl = song.isLocal ? (song.localPath ?? '') : '(未取到)';
+    debugLog?.record('播放开始 ${song.name}', <String, Object?>{
+      '歌曲': '${song.name} - ${song.singer}',
+      '平台': song.source,
+      '本地': song.isLocal,
+      '起始位置': '${initialPosition.inSeconds}s',
+    });
 
     try {
       if (song.isLocal) {
         await service.playFile(song.localPath!, initialPosition: initialPosition);
       } else {
         final url = await _resolveUrl(song);
+        handedUrl = url;
         // A newer play request may have been issued while the URL was being
         // resolved. Starting this stale track now would silently play the
         // wrong song, so drop it.
@@ -251,6 +280,11 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       _isPlaying = true;
       _autoSkips = 0;
       final actualDuration = service.player.duration ?? service.duration;
+      debugLog?.record('播放成功 ${song.name}', <String, Object?>{
+        'URL': handedUrl,
+        '时长': formatDuration(actualDuration),
+        '播放器状态': '${service.player.processingState}',
+      });
       await service.setMediaItem(song, duration: actualDuration);
       if (song.interval.trim().isEmpty && actualDuration > Duration.zero) {
         libraryState.updateSongInterval(song, formatDuration(actualDuration));
@@ -262,9 +296,19 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       unawaited(_loadLyrics(song));
       unawaited(_preloadNext());
       _notify();
-    } catch (error) {
-      if (token != _playToken || _disposed) return;
+    } catch (error, stack) {
+      if (token != _playToken || _disposed) {
+        debugLog?.record('播放作废 ${song.name}', <String, Object?>{
+          '原因': '被新的播放请求取代或已销毁',
+          '错误': '$error',
+        });
+        return;
+      }
       if (allowRetry && !song.isLocal && sourceState.hasActiveSource) {
+        debugLog?.record('播放失败重试 ${song.name}', <String, Object?>{
+          '错误': '$error',
+          '堆栈': '$stack',
+        });
         _urlCache.remove(_songKey(song));
         _statusText = '播放失败，正在重试…';
         _notify();
@@ -292,6 +336,12 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
         _statusText = sourceState.lastPoolError == null
             ? '这首无法播放，正在试下一首…'
             : '无法播放：${sourceState.lastPoolError}';
+        debugLog?.record('自动跳歌 → ${_queue[nextIdx].name}', <String, Object?>{
+          '失败歌曲': song.name,
+          '错误': '$error',
+          '源侧原因': sourceState.lastPoolError,
+          '已跳数': _autoSkips,
+        });
         _notify();
         await playSong(_queue[nextIdx], queue: _queue, index: nextIdx);
         return;
@@ -304,6 +354,11 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       }
       _errorText = reason;
       _statusText = reason;
+      debugLog?.record('播放终止 ${song.name}', <String, Object?>{
+        '错误': '$error',
+        '堆栈': '$stack',
+        'URL': handedUrl,
+      });
       _notify();
     }
   }
@@ -430,6 +485,10 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       _statusText = '已停止';
       _errorText = null;
       unawaited(service.pause());
+      debugLog?.record('用户按键停止跳歌', <String, Object?>{
+        '当时在加载': true,
+        '歌曲': _current?.name,
+      });
       _notify();
       return;
     }
@@ -620,6 +679,11 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       case AppLifecycleState.hidden:
       case AppLifecycleState.paused:
         _appInForeground = false;
+        debugLog?.record('进入后台 ${state.name}', <String, Object?>{
+          '在播': _isPlaying,
+          '在加载': _loading,
+          '歌曲': _current?.name,
+        });
         if (_isPlaying || _loading) _resumeOnForeground = true;
         // Persist immediately: iOS may kill a suspended app at any time.
         if (_current != null) _saveProgress();
@@ -632,6 +696,12 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
         _resumeOnForeground = false;
         final song = _current;
         if (song == null) return;
+        debugLog?.record('回前台自动恢复', <String, Object?>{
+          '歌曲': song.name,
+          '在加载': _loading,
+          '在播': _isPlaying,
+          '位置': '${_position.inSeconds}s',
+        });
         unawaited(_resumeAfterForeground(song));
         break;
       case AppLifecycleState.detached:

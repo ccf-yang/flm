@@ -27,6 +27,10 @@ class SourceEngine {
           onWebResourceError: (error) {
             // Ignore failed sub-resources; only the main document matters.
             if (error.isForMainFrame != true) return;
+            onEvent?.call('沙箱页面加载失败', <String, Object?>{
+              '描述': error.description,
+              '代码': error.errorCode,
+            });
             final completer = _pageReady;
             if (completer != null && !completer.isCompleted) {
               completer.completeError(StateError('自定义源引擎加载失败: ${error.description}'));

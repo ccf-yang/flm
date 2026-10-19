@@ -62,8 +62,8 @@ class DebugScreen extends StatelessWidget {
                       Expanded(
                         child: Text(
                           debug.enabled
-                              ? '记录中 · ${debug.entries.length} 条（最多保留 200 条）'
-                              : '调试开关已关闭，日志为空',
+                              ? '记录中 · ${debug.entries.length} 条（最多保留 500 条，关闭只暂停不清空）'
+                              : '记录已暂停 · 历史日志保留，点右上角垃圾桶可清空',
                           style: TextStyle(
                             fontSize: 11.5,
                             color: debug.enabled ? accentFor(context) : mutedFor(context),

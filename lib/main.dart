@@ -31,7 +31,6 @@ Future<void> main() async {
   final customSourceRepository = await CustomSourceRepository.load();
 
   final httpBridge = HttpBridge();
-  final onlineEngine = OnlineEngine(httpBridge);
 
   final playerService = FlmPlayerService();
   await AudioService.init(
@@ -53,6 +52,7 @@ Future<void> main() async {
   final appState = AppState(settingsRepository);
   final debugLog = DebugLog(enabled: appState.settings.debugEnabled);
   httpBridge.debugLog = debugLog;
+  final onlineEngine = OnlineEngine(httpBridge)..debugLog = debugLog;
   final sourceState = SourceState(
     repository: customSourceRepository,
     http: httpBridge,
@@ -69,6 +69,7 @@ Future<void> main() async {
     appState: appState,
     libraryState: libraryState,
     onlineEngine: onlineEngine,
+    debugLog: debugLog,
   );
   final searchState = SearchState(engine: onlineEngine, appState: appState);
   final discoverState = DiscoverState(engine: onlineEngine, appState: appState);

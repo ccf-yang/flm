@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import 'http_bridge.dart';
+import 'debug_log.dart';
 
 class OnlineEngine {
   OnlineEngine(this._http) {
@@ -25,6 +26,10 @@ class OnlineEngine {
             // Sub-resource failures (fonts, favicons, source maps) must not
             // abort engine startup; only a failed main document is fatal.
             if (error.isForMainFrame != true) return;
+            debugLog?.record('在线引擎页面加载失败', <String, Object?>{
+              '描述': error.description,
+              '代码': error.errorCode,
+            });
             if (!_ready.isCompleted) {
               _ready.completeError(StateError('在线引擎加载失败: ${error.description}'));
             }
@@ -41,6 +46,10 @@ class OnlineEngine {
   int _sequence = 0;
   bool _loaded = false;
   String? _lastJsError;
+
+  /// When set (and its switch is on), every engine call is mirrored to the
+  /// in-app debug page.
+  DebugLog? debugLog;
 
   WebViewController get controller => _controller;
 
@@ -81,6 +90,13 @@ class OnlineEngine {
   }
 
   Future<dynamic> call(String action, [Map<String, dynamic> params = const <String, dynamic>{}]) async {
+    final startedAt = DateTime.now();
+    final source = params['source'] ?? '';
+    debugLog?.record('在线请求 $action · $source', <String, Object?>{
+      '参数': params.entries
+          .where((e) => e.key != 'song' && e.key != 'list' && e.key != 'page' && e.key != 'limit')
+          .join(', '),
+    });
     await load();
     final id = ++_sequence;
     final completer = Completer<dynamic>();
@@ -92,12 +108,24 @@ class OnlineEngine {
     } catch (error) {
       _pending.remove(id);
       final detail = _lastJsError == null ? '' : ' ($_lastJsError)';
+      debugLog?.record('在线请求失败 $action · $source', <String, Object?>{
+        '原因': '$error$detail',
+      });
       throw StateError('在线引擎执行失败: $error$detail');
     }
     try {
-      return await completer.future.timeout(const Duration(seconds: 35));
+      final result = await completer.future.timeout(const Duration(seconds: 35));
+      debugLog?.record(
+          '在线完成 $action · $source', <String, Object?>{
+        '耗时': '${DateTime.now().difference(startedAt).inMilliseconds}ms',
+      });
+      return result;
     } on TimeoutException {
       _pending.remove(id);
+      debugLog?.record('在线超时 $action · $source', <String, Object?>{
+        '耗时': '${DateTime.now().difference(startedAt).inMilliseconds}ms',
+        '动作': '标记引擎失效，下次调用重载页面',
+      });
       // A timeout usually means the WKWebView was suspended in the background
       // or its content process was reclaimed by iOS. Force a reload on the
       // next call instead of silently timing out forever.

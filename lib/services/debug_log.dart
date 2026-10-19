@@ -8,11 +8,12 @@ import 'package:flutter/foundation.dart';
 /// initialization/resolution, errors) is recorded with url, headers, body and
 /// response, and each entry is separated by two blank lines so the raw dump
 /// stays readable. Recording is gated on [enabled] at append time; turning the
-/// switch off clears what was captured.
+/// switch off pauses recording but keeps the existing log readable — use
+/// [clear] to wipe it.
 class DebugLog extends ChangeNotifier {
   DebugLog({required this.enabled});
 
-  static const int _maxEntries = 200;
+  static const int _maxEntries = 500;
   static const int _maxBodyChars = 800;
 
   bool enabled;
@@ -39,8 +40,9 @@ class DebugLog extends ChangeNotifier {
   }
 
   void setEnabled(bool value) {
+    // Turning the switch off must NOT wipe the log — the user needs to read
+    // what happened after the fact. Use the explicit clear button for that.
     enabled = value;
-    if (!value) clear();
     notifyListeners();
   }
 
