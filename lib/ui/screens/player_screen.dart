@@ -630,7 +630,7 @@ class _Controls extends StatelessWidget {
                       ),
                     )
                   : Icon(
-                      player.isPlaying
+                      player.willPlay
                           ? CupertinoIcons.pause_fill
                           : CupertinoIcons.play_fill,
                       size: 28,

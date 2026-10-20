@@ -187,12 +187,12 @@ class _GlassPendant extends StatelessWidget {
                 shape: BoxShape.circle,
                 boxShadow: <BoxShadow>[
                   BoxShadow(
-                    color: player.isPlaying
+                    color: player.willPlay
                         ? accentFor(context).withValues(alpha: 0.22)
                         : Colors.black.withValues(
                             alpha: isDark ? 0.34 : 0.16,
                           ),
-                    blurRadius: player.isPlaying ? 30 : 24,
+                    blurRadius: player.willPlay ? 30 : 24,
                     offset: const Offset(0, 10),
                   ),
                 ],

@@ -11,7 +11,14 @@ class FlmAudioHandler extends BaseAudioHandler {
   final FlmPlayerService _service;
 
   @override
-  Future<void> play() => _service.play();
+  Future<void> play() {
+    // Resuming from the lock screen / control centre has to run through the
+    // controller: the player no longer activates the audio session itself, so a
+    // bare `AudioPlayer.play()` would restart a track that stays silent.
+    final callback = _service.onPlayRequest;
+    if (callback != null) return callback();
+    return _service.play();
+  }
 
   @override
   Future<void> pause() {
@@ -75,7 +82,14 @@ class FlmPlayerService {
     );
   }
 
-  final AudioPlayer _player = AudioPlayer();
+  /// `handleAudioSessionActivation: false` makes this player a *listener* of the
+  /// audio session instead of a second owner: just_audio otherwise calls
+  /// `setActive(true)` on every `play()` with its own default configuration, and
+  /// silently does nothing when that call fails — which is exactly the "进度条在走、
+  /// 按钮是播放态、但没有声音" state behind the lock screen. `PlayerController`
+  /// configures and activates the session itself before handing anything to the
+  /// player, so there is exactly one owner.
+  final AudioPlayer _player = AudioPlayer(handleAudioSessionActivation: false);
   late final FlmAudioHandler _handler;
   final List<StreamSubscription<dynamic>> _subscriptions = <StreamSubscription<dynamic>>[];
   Duration _duration = Duration.zero;
@@ -84,6 +98,10 @@ class FlmPlayerService {
   Future<void> Function()? onSkipPrevious;
   Future<void> Function()? onCompleted;
   void Function()? onExternalPause;
+
+  /// Set by the controller so the system play button (lock screen, control
+  /// centre) resumes through the same session-owning path as an in-app tap.
+  Future<void> Function()? onPlayRequest;
 
   AudioPlayer get player => _player;
   FlmAudioHandler get handler => _handler;

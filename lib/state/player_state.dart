@@ -30,6 +30,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   }) {
     _subscriptions.add(
       service.positionStream.listen((position) {
+        if (position > _position) _lastProgressChangeAt = DateTime.now();
         _position = position;
         if (_lyrics.isNotEmpty) {
           final nextLine = LyricParser.activeIndex(_lyrics, position);
@@ -67,6 +68,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     );
     service.onSkipNext = () => next();
     service.onSkipPrevious = () => previous();
+    service.onPlayRequest = play;
     service.onCompleted = _handleCompleted;
     service.onPlayError = (message) {
       debugLog?.record('播放器报错 ${_current?.name}', <String, Object?>{
@@ -117,18 +119,37 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   /// Player position sampled on the previous watchdog tick, so a stalled native
   /// clock can be told apart from a running one.
   Duration _watchPosition = Duration.zero;
+  /// Last time the native player's clock moved. The watchdog's only evidence of
+  /// audible audio, because `playing == true` keeps being reported while the
+  /// shared session is muted behind the lock screen.
+  DateTime _lastProgressChangeAt = DateTime.now();
   int _silentHeals = 0;
   bool _sessionConfirmedActive = false;
   /// Set when playback is running as the app leaves the foreground and cleared
   /// when it comes back; drives the preventive re-arm in [_checkAudible].
   DateTime? _backgroundSince;
+
+  /// Whether the one preventive re-arm for the current background stretch has
+  /// been spent. Reset every time the app leaves the foreground.
+  bool _proactiveHealDone = false;
   static const Duration _proactiveHealAfter = Duration(seconds: 12);
+
+  /// How long the native clock may stand still while the user wants sound before
+  /// the watchdog re-arms the pipeline. Covers both a muted-but-advancing session
+  /// and a stream that never started producing samples.
+  static const Duration _noProgressWindow = Duration(seconds: 15);
   static const int _maxSilentHeals = 3;
 
   List<Song> _queue = <Song>[];
   int _index = -1;
   Song? _current;
   bool _isPlaying = false;
+
+  /// Whether the user wants sound right now. Kept apart from [_isPlaying], which
+  /// is only ever the native player's own claim — behind the lock screen that
+  /// claim stays true while the speaker is silent, so every recovery decision is
+  /// driven by this intent flag instead.
+  bool _shouldPlay = false;
   bool _loading = false;
   Duration _position = Duration.zero;
   Duration _duration = Duration.zero;
@@ -138,6 +159,10 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   String? _errorText;
   int _playToken = 0;
   bool _disposed = false;
+  DateTime? _loadStartedAt;
+
+  /// Queue indices still to be played, decided once and reused (see [_upcoming]).
+  List<int> _nextPlan = <int>[];
   /// True once the resolved URL has been given to the native player, i.e. the
   /// only thing left is buffering/audio, not link fetching.
   bool _handedOff = false;
@@ -168,10 +193,23 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   /// load once JavaScript runs again.
   static const Duration _backgroundResolveTimeout = Duration(seconds: 12);
 
+  /// How long a resolved link is trusted for, how close to that deadline it gets
+  /// re-fetched while the app is awake, and how many links are kept.
+  static const Duration _urlTtl = Duration(minutes: 10);
+  static const Duration _urlRefreshLead = Duration(minutes: 4);
+  static const int _maxCachedUrls = 60;
+
   List<Song> get queue => List<Song>.unmodifiable(_queue);
   int get index => _index;
   Song? get current => _current;
   bool get isPlaying => _isPlaying;
+
+  /// Whether sound is supposed to be coming out right now — the user's intent,
+  /// independent of what the native player claims. The play/pause button reads
+  /// this because behind the lock screen `playing` stays true while the speaker is
+  /// muted, and because a fresh load is not "paused" just because the platform
+  /// has not acknowledged it yet.
+  bool get willPlay => _shouldPlay || _isPlaying;
   bool get loading => _loading;
   Duration get position => _position;
   Duration get duration => _duration;
@@ -211,10 +249,11 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
         debugLog?.record('音频中断 ${event.begin ? "开始" : "结束"}', <String, Object?>{
           '类型': '${event.type}',
           '当时在播': _isPlaying,
+          '想要声音': _shouldPlay,
           '当时在加载': _loading,
         });
         if (event.begin) {
-          _resumeAfterInterruption = _isPlaying;
+          _resumeAfterInterruption = _shouldPlay || _isPlaying;
           if (_isPlaying) unawaited(service.pause());
           return;
         }
@@ -223,10 +262,14 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
         if (event.type == AudioInterruptionType.pause ||
             event.type == AudioInterruptionType.unknown) {
           unawaited(() async {
-            await _activateSession();
-            if (!_disposed && _current != null && !_isPlaying) {
-              await service.play();
-            }
+            if (_disposed || _current == null) return;
+            // The interrupted item is usually still loaded but the session was
+            // released, so resume through the re-arm path — it takes ownership of
+            // the session again and reloads the song when the item is gone.
+            _userPaused = false;
+            _shouldPlay = true;
+            _silentHeals = 0;
+            await _healSilence();
           }());
         }
       });
@@ -242,77 +285,142 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _activateSession() async {
+  /// Make this app the owner of the shared `AVAudioSession` again.
+  ///
+  /// The source sandbox is a WKWebView, and WebKit reclaims the process-wide
+  /// session as soon as no *web* media is audible — which happens the moment the
+  /// screen locks. From then on the native player keeps advancing its clock and
+  /// keeps reporting `playing == true` while nothing comes out of the speaker.
+  ///
+  /// `audio_session` only re-configures when its own Dart-side `isConfigured`
+  /// flag is unset, and that flag says nothing about what the OS currently has,
+  /// so the category is applied unconditionally here: locking the screen can drop
+  /// us back to the default category, and the default category is muted by the OS.
+  /// Returns whether the session ended up active; a false answer means playback
+  /// is very likely silent, so the caller must not treat "started" as "audible".
+  Future<bool> _activateSession({String? reason}) async {
     _sessionConfirmedActive = false;
-    try {
-      final session = await AudioSession.instance;
-      // main() sets up the music session, but a failure there is invisible and
-      // would leave the system default category behind — and the default
-      // category is muted by the OS the moment the screen locks.
-      if (!session.isConfigured) {
-        await session.configure(const AudioSessionConfiguration.music());
-      }
-      final active = await session.setActive(true);
-      _sessionConfirmedActive = active;
-      if (!active) {
+    const configuration = AudioSessionConfiguration.music();
+    for (var attempt = 0; attempt < 2; attempt++) {
+      try {
+        final session = await AudioSession.instance;
+        await session.configure(configuration);
+        final active = await session.setActive(true);
+        _sessionConfirmedActive = active;
+        if (active) return true;
+        if (attempt == 0) {
+          debugLog?.record('音频会话激活失败，重试 ${_current?.name}', <String, Object?>{
+            '原因': reason,
+            '前台': _appInForeground,
+            '在播': _isPlaying,
+            '原生状态': '${service.player.processingState}',
+          });
+          await Future<void>.delayed(const Duration(milliseconds: 150));
+          continue;
+        }
         debugLog?.record('音频会话激活失败 ${_current?.name}', <String, Object?>{
+          '原因': reason,
           '前台': _appInForeground,
           '在播': _isPlaying,
           '原生状态': '${service.player.processingState}',
         });
+        return false;
+      } catch (error) {
+        debugLog?.record('音频会话配置异常 ${_current?.name}', <String, Object?>{
+          '原因': reason,
+          '错误': '$error',
+        });
+        if (attempt == 0) {
+          await Future<void>.delayed(const Duration(milliseconds: 150));
+          continue;
+        }
       }
-    } catch (_) {}
+    }
+    return false;
   }
 
-  /// Silence watchdog. The source sandbox is a WKWebView, and WebKit reclaims the
-  /// process-wide `AVAudioSession` as soon as no *web* media is audible — which is
-  /// what happens the moment the screen locks. The app's own player then keeps
-  /// reporting `playing == true` and the position keeps advancing, yet nothing
-  /// comes out of the speaker, and only a manual pause + play brought the sound
-  /// back.
-  ///
-  /// A stolen session is not observable from Dart (`setActive(true)` still answers
-  /// successfully while the route is inert), so recovery is driven by the
-  /// background stretch rather than by evidence: a stalled player is healed right
-  /// away, and a stretch behind the lock screen gets one preventive re-arm. That
-  /// re-arm costs a sub-second blip on devices where nothing was wrong, which is
-  /// the cheaper failure compared to an entire silent lock-screen session.
+  /// Silence watchdog. It trusts neither the `playing` flag nor the loading
+  /// spinner: both stay green while the speaker is mute, which is precisely the
+  /// lock-screen failure the user reported ("进度条在走，按钮是播放状态，就是没有声音").
+  /// The only evidence it acts on is *the native clock advancing* plus the intent
+  /// captured in [_shouldPlay], so a stalled or never-handed-off load is healed
+  /// instead of being mistaken for ordinary buffering.
   void _checkAudible() {
-    if (_disposed || _current == null || _loading || !_isPlaying) return;
+    if (_disposed || _current == null || !_shouldPlay) return;
+    final now = DateTime.now();
+    final started = _loadStartedAt;
+
+    // The source sandbox is a frozen WKWebView once the screen locks, so a link
+    // that was not resolved before then can never be resolved. Abandon that load
+    // rather than sitting on "正在获取播放链接…" — and hand the queue to the first
+    // track whose link is already cached, which keeps background playback running.
+    if (_loading && !_handedOff && started != null) {
+      if (!_appInForeground &&
+          now.difference(started) > const Duration(seconds: 20)) {
+        _silentHeals = 0;
+        debugLog?.record('后台取链停滞，放弃本次加载 ${_current?.name}', <String, Object?>{
+          '已等待': '${now.difference(started).inSeconds}s',
+          '下一首已缓存链接': _nextPlayableIndex() != null,
+        });
+        _playToken++;
+        _loading = false;
+        _statusText = '锁屏时取不到链接，正在用已缓存的地址继续';
+        _resumeOnForeground = true;
+        _notify();
+        unawaited(_handleCompleted());
+      }
+      return;
+    }
+
     if (_sessionConfirmedActive) {
-      // A fresh activation just landed; assume audio is fine until the session
-      // is next interrupted by going to the background.
+      // A fresh activation just landed; give the pipeline one full window to
+      // produce audio before this tick starts judging it.
       _sessionConfirmedActive = false;
+      _lastProgressChangeAt = now;
       _watchPosition = service.player.position;
       return;
     }
+
     if (!_appInForeground && _backgroundSince == null) {
       // A track that started while already backgrounded has no stretch to
       // measure yet.
-      _backgroundSince = DateTime.now();
+      _backgroundSince = now;
+      _proactiveHealDone = false;
     }
+
     final position = service.player.position;
-    final stalled = position <= _watchPosition &&
-        position > Duration.zero &&
-        service.player.processingState == ProcessingState.ready;
+    final advanced = position > _watchPosition;
+    if (advanced) {
+      _lastProgressChangeAt = now;
+      // Audio is demonstrably flowing, so spend the whole re-arm budget again on
+      // the next problem instead of running out after a long album.
+      _silentHeals = 0;
+    }
     _watchPosition = position;
+
+    final quietFor = now.difference(_lastProgressChangeAt);
+    final stalled = !advanced && quietFor > _noProgressWindow;
     if (_silentHeals >= _maxSilentHeals) return;
-    final away = _backgroundSince == null
-        ? null
-        : DateTime.now().difference(_backgroundSince!);
-    final needsProactive = _silentHeals == 0 &&
+    final away = _backgroundSince == null ? null : now.difference(_backgroundSince!);
+    // Exactly one preventive re-arm per background stretch: the muted-but-
+    // advancing clock it corrects also resets the stall budget, so leaving this
+    // condition on the budget would click-pause the track every few seconds.
+    final needsProactive = !_proactiveHealDone &&
         !_appInForeground &&
         away != null &&
         away > _proactiveHealAfter;
     if (!stalled && !needsProactive) return;
     _silentHeals++;
+    if (needsProactive) _proactiveHealDone = true;
     debugLog?.record(
-        stalled ? '播放已停滞，自动重挂 ${_current?.name}' : '锁屏后预防性重挂 ${_current?.name}',
+        stalled ? '没有声音输出，自动重挂 ${_current?.name}' : '锁屏后预防性重挂 ${_current?.name}',
         <String, Object?>{
           '前台': _appInForeground,
           '位置': '${position.inSeconds}s',
+          '无进展时长': '${quietFor.inSeconds}s',
           '后台时长': away == null ? '-' : '${away.inSeconds}s',
           '原生状态': '${service.player.processingState}',
+          '播放器自称在播': _isPlaying,
           '已重挂次数': _silentHeals,
         });
     unawaited(_healSilence());
@@ -326,8 +434,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     final token = _playToken;
     final song = _current;
     if (_disposed || song == null) return;
-    _sessionConfirmedActive = false;
-    await _activateSession();
+    await _activateSession(reason: 'watchdog');
     if (_disposed || token != _playToken) return;
     final processing = service.player.processingState;
     if (processing == ProcessingState.completed) {
@@ -335,16 +442,17 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     if (processing == ProcessingState.idle || processing == ProcessingState.loading) {
-      await _loadAndPlay(song, initialPosition: _position);
+      await _loadAndPlay(song, initialPosition: _position, reason: 'watchdog 重载');
       return;
     }
     await service.pause();
     if (_disposed || token != _playToken) return;
     await service.play();
     if (_disposed) return;
-    // Native playback resumes in place; re-anchor the watchdog sample so the
-    // next tick compares against the position after the re-arm.
+    // Re-anchor the watchdog samples so the next tick measures the clock after
+    // the re-arm rather than against the position it just declared stale.
     _watchPosition = service.player.position;
+    _lastProgressChangeAt = DateTime.now();
     _notify();
   }
 
@@ -371,7 +479,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     _notify();
   }
 
-  Future<void> playSong(Song song, {List<Song>? queue, int? index}) async {
+  Future<void> playSong(Song song, {List<Song>? queue, int? index, String? reason}) async {
     if (queue != null) {
       _queue = List<Song>.from(queue);
       _index = index ?? _queue.indexWhere((item) => item.id == song.id && item.source == song.source);
@@ -388,6 +496,9 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
         _index = 0;
       }
     }
+    // Keep whatever remains of the pre-computed order so the links already in
+    // hand for the following tracks are still used.
+    _syncPlanAfterIndexChange();
 
     _current = song;
     _position = Duration.zero;
@@ -401,17 +512,21 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     _silentHeals = 0;
     _statusText = '正在准备播放…';
     _notify();
-    await _loadAndPlay(song);
+    await _loadAndPlay(song, reason: reason);
   }
 
   Future<void> _loadAndPlay(
     Song song, {
     Duration initialPosition = Duration.zero,
     bool allowRetry = true,
+    String? reason,
   }) async {
     final token = ++_playToken;
     _loading = true;
+    _shouldPlay = true;
     _handedOff = false;
+    _loadStartedAt = DateTime.now();
+    _lastProgressChangeAt = DateTime.now();
     _statusText = '正在获取播放链接…';
     _errorText = null;
     _notify();
@@ -422,12 +537,13 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       '本地': song.isLocal,
       '前台': _appInForeground,
       '起始位置': '${initialPosition.inSeconds}s',
+      if (reason != null) '触发': reason,
     });
 
     try {
       if (song.isLocal) {
         _handedOff = true;
-        await _activateSession();
+        await _activateSession(reason: '本地起播');
         await service.playFile(song.localPath!, initialPosition: initialPosition);
       } else {
         final url = await _resolveUrl(song);
@@ -437,16 +553,30 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
         // wrong song, so drop it.
         if (token != _playToken || _disposed) return;
         _handedOff = true;
-        await _activateSession();
+        final sessionIsOurs = await _activateSession(reason: '起播前激活');
+        if (token != _playToken || _disposed) return;
         await service.playUrl(url, initialPosition: initialPosition);
+        if (!sessionIsOurs) {
+          // The session refused to become ours, so this item would run silently.
+          // Re-arm once right after the handoff; if it is still mute the
+          // watchdog catches it within one window instead of leaving the user to
+          // discover it by tapping the play button.
+          debugLog?.record('会话未接管，起播后补激活 ${song.name}', <String, Object?>{
+            'URL': handedUrl,
+            '前台': _appInForeground,
+          });
+          await Future<void>.delayed(const Duration(milliseconds: 400));
+          if (token != _playToken || _disposed) return;
+          await _activateSession(reason: '激活失败补救');
+        }
       }
       if (token != _playToken || _disposed) return;
 
       _loading = false;
       _statusText = null;
       _errorText = null;
-      _isPlaying = true;
       _autoSkips = 0;
+      _lastProgressChangeAt = DateTime.now();
       final actualDuration = service.player.duration ?? service.duration;
       debugLog?.record('播放成功 ${song.name}', <String, Object?>{
         'URL': handedUrl,
@@ -493,29 +623,35 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       }
       _loading = false;
       _isPlaying = false;
+      _shouldPlay = false;
       // All configured sources failed for this song: keep moving to the next
       // one instead of stalling, until either something plays or the whole
-      // queue has failed a full round.
-      if (_appInForeground &&
+      // queue has failed a full round. Behind the lock screen the source sandbox
+      // cannot resolve anything, so only a track whose link is already cached
+      // counts as playable there — that is what keeps a background session
+      // running instead of dying on the first unresolvable song.
+      final advance = _nextPlayableIndex();
+      if (advance != null &&
           !_userPaused &&
           !song.isLocal &&
           sourceState.hasActiveSource &&
           _queue.length > 1 &&
           _autoSkips < _queue.length) {
         _autoSkips++;
-        final nextIdx = (_index + 1) % _queue.length;
         _statusText = sourceState.lastPoolError == null
             ? '这首无法播放，正在试下一首…'
             : '无法播放：${sourceState.lastPoolError}';
-        debugLog?.record('自动跳歌 → ${_queue[nextIdx].name}', <String, Object?>{
+        debugLog?.record('自动跳歌 → ${_queue[advance].name}', <String, Object?>{
           '失败歌曲': song.name,
           '错误': '$error',
           '失败地址': handedUrl,
           '源侧原因': sourceState.lastPoolError,
           '已跳数': _autoSkips,
+          '前台': _appInForeground,
+          '下一首已缓存链接': _hasUsableCache(_queue[advance]),
         });
         _notify();
-        await playSong(_queue[nextIdx], queue: _queue, index: nextIdx);
+        await playSong(_queue[advance], queue: _queue, index: advance);
         return;
       }
       _errorText = _friendlyError(error);
@@ -547,71 +683,184 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     return cached != null && cached.expiresAt.isAfter(DateTime.now());
   }
 
-  Future<String> _resolveUrl(Song song) async {
-    final key = _songKey(song);
-    final cached = _urlCache[key];
-    if (cached != null && cached.expiresAt.isAfter(DateTime.now())) {
-      return cached.url;
+  /// Indices still to be played, in the order an automatic advance will actually
+  /// use them. Random mode used to re-roll at the moment of switching, so the
+  /// links that had been pre-fetched belonged to different tracks and a
+  /// single-loop queue never pre-fetched anything at all; deciding the order once
+  /// here makes the pre-fetch and the advance agree.
+  List<int> _upcoming({int count = 3}) {
+    if (_queue.isEmpty || _index < 0) return const <int>[];
+    _nextPlan.removeWhere((item) => item < 0 || item >= _queue.length);
+    while (_nextPlan.length < count + 2) {
+      final tail = _nextPlan.isEmpty ? _index : _nextPlan.last;
+      final step = _stepAfter(tail);
+      if (step < 0) break;
+      // A single-loop plan needs exactly one self entry: it is the link the
+      // replay reuses, and repeating it would only re-resolve the same song.
+      if (step == tail && _nextPlan.isNotEmpty) break;
+      if (playMode != PlayMode.singleLoop && _nextPlan.contains(step)) break;
+      _nextPlan.add(step);
     }
-    final pending = sourceState.resolveMusicUrlAutoSwitch(song);
-    final resolved = _appInForeground
-        ? await pending
-        : await pending.timeout(
-            _backgroundResolveTimeout,
-            onTimeout: () => throw StateError(
-              '后台取链超时（音源脚本在锁屏时被系统冻结），回前台后会自动重试',
-            ),
-          );
-    final url = '${resolved['url'] ?? ''}';
-    if (url.isEmpty) throw StateError('没有获取到播放链接');
-    if (_urlCache.length > 30) _urlCache.clear();
-    _urlCache[key] = _CachedUrl(
-      url: url,
-      expiresAt: DateTime.now().add(const Duration(minutes: 10)),
-    );
-    return url;
+    final result = <int>[];
+    for (final item in _nextPlan) {
+      if (result.length >= count) break;
+      // Repeating the current track is the point in single-loop mode, and in any
+      // mode when the queue holds only that song.
+      if (item == _index && playMode != PlayMode.singleLoop && _queue.length > 1) {
+        continue;
+      }
+      if (appState.isDisliked(_queue[item])) continue;
+      result.add(item);
+    }
+    return result;
   }
 
-  /// Resolve the next two tracks ahead of time. iOS suspends the WKWebView that
-  /// runs the source sandbox as soon as the app is backgrounded, so a URL that
-  /// has not been resolved *before* the screen locks can never be fetched until
-  /// the user returns. Preloading gives background playback a ready URL.
-  Future<void> _preloadNext() async {
-    if (_queue.length < 2 || _current == null || !sourceState.hasActiveSource) {
-      return;
+  /// The track a failure or an automatic advance should move to, or null when
+  /// nothing can be played right now. Behind the lock screen only a song whose
+  /// link is already in hand counts as playable, since the source sandbox cannot
+  /// resolve anything while its JavaScript is frozen.
+  int? _nextPlayableIndex() {
+    final indices = _upcoming(count: 3);
+    if (indices.isEmpty) return null;
+    if (_appInForeground) return indices.first;
+    for (final item in indices) {
+      final song = _queue[item];
+      if (song.isLocal || _hasUsableCache(song)) return item;
     }
+    return null;
+  }
+
+  /// Forget the decided order after the queue, the position or the play mode
+  /// changed. [_upcoming] repopulates it on the next call.
+  void _invalidatePlan() => _nextPlan = <int>[];
+
+  /// After the index moved, keep whatever is left of the plan that still applies
+  /// so an already pre-fetched link is not thrown away.
+  void _syncPlanAfterIndexChange() {
+    if (_nextPlan.isEmpty) return;
+    final at = _nextPlan.indexOf(_index);
+    _nextPlan = at >= 0 ? _nextPlan.sublist(at + 1) : <int>[];
+  }
+
+  int _stepAfter(int from) {
+    if (_queue.isEmpty) return -1;
+    switch (playMode) {
+      case PlayMode.random:
+        return _randomIndexAwayFrom(<int>{from, ..._nextPlan});
+      case PlayMode.listLoop:
+        return (from + 1) % _queue.length;
+      case PlayMode.sequence:
+        return from + 1 < _queue.length ? from + 1 : -1;
+      case PlayMode.singleLoop:
+        return from;
+    }
+  }
+
+  int _randomIndexAwayFrom(Set<int> used) {
+    final available = <int>[];
+    for (var i = 0; i < _queue.length; i++) {
+      if (!used.contains(i)) available.add(i);
+    }
+    if (available.isEmpty) return -1;
+    return available[Random().nextInt(available.length)];
+  }
+
+  /// A cached link that is about to expire must be replaced, not served: on a
+  /// four-minute track plus a long lock-screen stretch the tail of the queue would
+  /// otherwise die on URLs that expired while nothing was listening.
+  static bool _isGoingStale(_CachedUrl cached, DateTime now) =>
+      cached.expiresAt.difference(now) <= _urlRefreshLead;
+
+  void _cacheUrl(String key, String url) {
+    _urlCache[key] = _CachedUrl(
+      url: url,
+      expiresAt: DateTime.now().add(_urlTtl),
+    );
+    if (_urlCache.length <= _maxCachedUrls) return;
+    // Drop the entries closest to expiry instead of wiping the whole map: one
+    // long queue walked end-to-end used to throw away the links the next
+    // few tracks depend on.
+    final keep = _current == null ? <String>{} : {_songKey(_current!)};
+    final doomed = _urlCache.entries.toList()
+      ..sort((a, b) => a.value.expiresAt.compareTo(b.value.expiresAt));
+    for (final entry in doomed) {
+      if (_urlCache.length <= _maxCachedUrls) break;
+      if (keep.contains(entry.key)) continue;
+      _urlCache.remove(entry.key);
+    }
+  }
+
+  Future<String> _resolveUrl(Song song) async {
+    final key = _songKey(song);
+    final now = DateTime.now();
+    final cached = _urlCache[key];
+    if (cached != null && cached.expiresAt.isAfter(now)) {
+      // Backgrounded, the sandbox is frozen, so even a nearly-expired link beats
+      // a resolve that can never finish. In the foreground, refresh proactively.
+      if (!_appInForeground || !_isGoingStale(cached, now)) return cached.url;
+    }
+    final pending = sourceState.resolveMusicUrlAutoSwitch(song);
+    try {
+      final resolved = _appInForeground
+          ? await pending
+          : await pending.timeout(
+              _backgroundResolveTimeout,
+              onTimeout: () => throw StateError(
+                '后台取链超时（音源脚本在锁屏时被系统冻结），回前台后会自动重试',
+              ),
+            );
+      final url = '${resolved['url'] ?? ''}';
+      if (url.isEmpty) throw StateError('没有获取到播放链接');
+      _cacheUrl(key, url);
+      return url;
+    } catch (error) {
+      // A refresh that failed must not lose the song we could still play.
+      if (cached != null && cached.expiresAt.isAfter(now)) {
+        debugLog?.record('刷新链接失败，沿用旧地址 ${song.name}', <String, Object?>{
+          '错误': '$error',
+          '旧地址剩余': '${cached.expiresAt.difference(now).inSeconds}s',
+        });
+        return cached.url;
+      }
+      rethrow;
+    }
+  }
+
+  /// Pre-fetch links for the tracks the queue will actually reach next. iOS
+  /// suspends the WKWebView that runs the source sandbox as soon as the app is
+  /// backgrounded, so a URL that has not been resolved *before* the screen locks
+  /// can never be fetched until the user returns.
+  Future<void> _preloadNext() async {
+    if (_current == null || !sourceState.hasActiveSource) return;
     final now = DateTime.now();
     if (now.difference(_lastPreloadAttempt) < const Duration(seconds: 8)) {
       return;
     }
 
-    final first = _nextIndex(auto: true);
-    final second = first >= 0 ? _indexAfter(first, auto: true) : -1;
-    final third = second >= 0 ? _indexAfter(second, auto: true) : -1;
-    final candidates = <int>{
-      if (first >= 0) first,
-      if (second >= 0) second,
-      if (third >= 0) third,
-    };
-
+    final candidates = _upcoming(count: 4);
     for (final index in candidates) {
-      if (index < 0 || index >= _queue.length || index == _index) continue;
       final song = _queue[index];
-      if (song.isLocal || appState.isDisliked(song)) continue;
+      if (song.isLocal) continue;
       final key = _songKey(song);
       final cached = _urlCache[key];
-      if (cached != null && cached.expiresAt.isAfter(now)) continue;
+      if (cached != null && cached.expiresAt.isAfter(now) && !_isGoingStale(cached, now)) {
+        continue;
+      }
       if (!_preloading.add(key)) continue;
       _lastPreloadAttempt = now;
       try {
-        final resolved = await sourceState.resolveMusicUrlAutoSwitch(song);
+        final resolved = _appInForeground
+            ? await sourceState.resolveMusicUrlAutoSwitch(song)
+            : await sourceState
+                .resolveMusicUrlAutoSwitch(song)
+                .timeout(_backgroundResolveTimeout);
         final url = '${resolved['url'] ?? ''}';
         if (url.isEmpty) continue;
-        if (_urlCache.length > 30) _urlCache.clear();
-        _urlCache[key] = _CachedUrl(
-          url: url,
-          expiresAt: DateTime.now().add(const Duration(minutes: 10)),
-        );
+        _cacheUrl(key, url);
+        debugLog?.record('预取链接成功 ${song.name}', <String, Object?>{
+          '队列位置': index,
+          '有效期': '${_urlTtl.inMinutes}分钟',
+        });
       } catch (_) {
         // Preloading is best effort.
       } finally {
@@ -625,19 +874,32 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   /// longer awaited, so those errors arrive here; reuse the normal load path so
   /// retry / 换源 / 自动跳歌 still apply, bounded so a permanently dead link cannot
   /// loop.
+  ///
+  /// The old guard was `if (_loading) return`, which threw away every error that
+  /// landed while a retry was in flight — the background silence looked like an
+  /// ordinary fetch. An error can only belong to a URL the native player already
+  /// has, so the presence of a hand-off is what makes it ours.
   Future<void> _handlePlayerError(String message) async {
     if (_disposed) return;
     final song = _current;
-    if (song == null || song.isLocal || _loading || _userPaused) return;
-    if (_playErrorAttempts >= 2) return;
+    if (song == null || song.isLocal || _userPaused) return;
+    if (_loading && !_handedOff) return;
+    if (_playErrorAttempts >= 2) {
+      debugLog?.record('播放器报错已达上限 ${song.name}', <String, Object?>{
+        '错误': message,
+        '前台': _appInForeground,
+      });
+      return;
+    }
     _playErrorAttempts++;
     debugLog?.record('播放器报错处理 ${song.name}', <String, Object?>{
       '错误': message,
       '第几次补救': _playErrorAttempts,
       '前台': _appInForeground,
+      '在加载': _loading,
     });
     _urlCache.remove(_songKey(song));
-    await _loadAndPlay(song, initialPosition: _position);
+    await _loadAndPlay(song, initialPosition: _position, reason: '播放器报错');
   }
 
   /// iOS surfaces failed media links as bare AVFoundation/NSURLError codes,
@@ -697,18 +959,19 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> togglePlay() async {
     if (_current == null) {
       if (_queue.isNotEmpty) {
-        await playSong(_queue.first, queue: _queue, index: 0);
+        await playSong(_queue.first, queue: _queue, index: 0, reason: '队列首曲');
       }
       return;
     }
-    // Pressing the button while the auto-skip chain is probing unreachable
-    // sources stops the chain outright: the stale attempt is dropped by its
-    // token and nothing advances until the user presses play again.
-    if (_loading) {
+    // Pressing the button while the queue is still probing for a link stops the
+    // chain outright: the stale attempt is dropped by its token and nothing
+    // advances until the user presses play again.
+    if (_loading && !_handedOff) {
       _playToken++;
       _loading = false;
       _handedOff = false;
       _isPlaying = false;
+      _shouldPlay = false;
       _userPaused = true;
       _resumeAfterInterruption = false;
       _statusText = '已停止';
@@ -721,25 +984,25 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       _notify();
       return;
     }
-    if (_isPlaying) {
-      _userPaused = true;
-      _resumeAfterInterruption = false;
-      await service.pause();
+    final processing = service.player.processingState;
+    if (_shouldPlay && processing != ProcessingState.ready) {
+      // The button says playing while the native player holds nothing playable.
+      // That tap means "give me sound", not "pause" — re-arm the pipeline in
+      // place instead of putting the user through pause + play.
+      _silentHeals = 0;
+      debugLog?.record('按键重挂音频 ${_current?.name}', <String, Object?>{
+        '原生状态': '$processing',
+        '位置': '${_position.inSeconds}s',
+        '前台': _appInForeground,
+      });
+      await _healSilence();
       return;
     }
-    _userPaused = false;
-    final processing = service.player.processingState;
-    if (processing == ProcessingState.idle ||
-        processing == ProcessingState.completed ||
-        _errorText != null) {
-      // A finished track reports its duration as the current position; start
-      // over from zero instead of reloading the final second.
-      final start =
-          processing == ProcessingState.completed ? Duration.zero : _position;
-      await _loadAndPlay(_current!, initialPosition: start);
-    } else {
-      await service.play();
+    if (willPlay) {
+      await pause();
+      return;
     }
+    await play();
   }
 
   Future<void> play() async {
@@ -752,18 +1015,30 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     if (processing == ProcessingState.idle ||
         processing == ProcessingState.completed ||
         _errorText != null) {
+      // A finished track reports its duration as the current position; start
+      // over from zero instead of reloading the final second.
       final start =
           processing == ProcessingState.completed ? Duration.zero : _position;
-      await _loadAndPlay(_current!, initialPosition: start);
-    } else {
-      await service.play();
+      await _loadAndPlay(_current!, initialPosition: start, reason: '手动/控制中心播放');
+      return;
     }
+    _shouldPlay = true;
+    // just_audio no longer activates the session on our behalf, so every resume
+    // path — including the lock-screen play button routed here — has to take
+    // ownership of it before the player is started.
+    await _activateSession(reason: '恢复播放');
+    if (_disposed) return;
+    await service.play();
+    _silentHeals = 0;
+    _lastProgressChangeAt = DateTime.now();
+    _notify();
   }
 
   Future<void> pause() async {
     _playToken++;
     _loading = false;
     _handedOff = false;
+    _shouldPlay = false;
     _userPaused = true;
     _resumeAfterInterruption = false;
     // The fetching hint belongs to a load that is now abandoned; leaving it up
@@ -781,8 +1056,9 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     if (_current == null) return;
     _position = position;
     // A backwards seek would otherwise look like a stalled clock to the
-    // watchdog, so re-anchor its sample.
+    // watchdog, so re-anchor both samples.
     _watchPosition = position;
+    _lastProgressChangeAt = DateTime.now();
     _notify();
     await service.seek(position);
   }
@@ -791,31 +1067,36 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     _userPaused = false;
     if (_queue.isEmpty) return;
     if (_current == null) {
-      await playSong(_queue.first, queue: _queue, index: 0);
+      await playSong(_queue.first, queue: _queue, index: 0, reason: '队列首曲');
       return;
     }
     if (auto && playMode == PlayMode.singleLoop) {
-      await _loadAndPlay(_current!);
-      return;
-    }
-    if (playMode == PlayMode.sequence && _index >= _queue.length - 1) {
-      _isPlaying = false;
-      _userPaused = true;
-      _statusText = '播放完毕';
-      await service.pause();
-      _notify();
+      await _loadAndPlay(_current!, reason: '单曲循环');
       return;
     }
 
-    var nextIndex = _nextIndex(auto: auto);
-    var attempts = 0;
-    while (nextIndex >= 0 &&
-        attempts < _queue.length &&
-        appState.isDisliked(_queue[nextIndex])) {
-      nextIndex = _indexAfter(nextIndex, auto: auto);
-      attempts++;
+    // Automatic advances follow the pre-computed order, so the track that starts
+    // is one whose link may already be in hand; manual taps run in the
+    // foreground where a fresh resolve is possible and use the plain order.
+    int nextIndex;
+    if (auto) {
+      final plan = _upcoming(count: 3);
+      nextIndex = _nextPlayableIndex() ?? (plan.isEmpty ? -1 : plan.first);
+    } else {
+      var candidate = _nextIndex(auto: false);
+      var attempts = 0;
+      while (candidate >= 0 &&
+          candidate < _queue.length &&
+          attempts < _queue.length &&
+          appState.isDisliked(_queue[candidate])) {
+        candidate = _indexAfter(candidate, auto: false);
+        attempts++;
+      }
+      nextIndex = candidate;
     }
-    if (nextIndex < 0) {
+    if (nextIndex < 0 || nextIndex >= _queue.length) {
+      _isPlaying = false;
+      _shouldPlay = false;
       _userPaused = true;
       _statusText = '播放完毕';
       await service.pause();
@@ -828,7 +1109,8 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       '链接已缓存': _hasUsableCache(_queue[nextIndex]),
       '播放模式': playMode.label,
     });
-    await playSong(_queue[nextIndex], queue: _queue, index: nextIndex);
+    await playSong(_queue[nextIndex],
+        queue: _queue, index: nextIndex, reason: auto ? '自动切歌' : '手动切歌');
   }
 
   int _nextIndex({bool auto = false}) {
@@ -893,7 +1175,8 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
         previousIndex = (_index - 1 + _queue.length) % _queue.length;
         break;
     }
-    await playSong(_queue[previousIndex], queue: _queue, index: previousIndex);
+    await playSong(_queue[previousIndex],
+        queue: _queue, index: previousIndex, reason: '上一首');
   }
 
   Future<void> _handleCompleted() async {
@@ -907,12 +1190,12 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   /// "tap to continue" state or from a foreground resume.
   void _onSourceChanged() {
     if (_disposed) return;
-    if (_loading || _isPlaying || _userPaused) return;
+    if (_loading || willPlay || _userPaused) return;
     if (_errorText == null) return;
     final song = _current;
     if (song == null || song.isLocal) return;
     if (!sourceState.hasActiveSource) return;
-    unawaited(_loadAndPlay(song, initialPosition: _position));
+    unawaited(_loadAndPlay(song, initialPosition: _position, reason: '源就绪后重试'));
   }
 
   /// iOS suspends the app shortly after it is backgrounded or the screen locks.
@@ -931,16 +1214,18 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
         _appInForeground = false;
         debugLog?.record('进入后台 ${state.name}', <String, Object?>{
           '在播': _isPlaying,
+          '想要声音': _shouldPlay,
           '在加载': _loading,
           '歌曲': _current?.name,
         });
-        if (_isPlaying || _loading) _resumeOnForeground = true;
-        if (_isPlaying) {
+        if (_shouldPlay || _isPlaying || _loading) _resumeOnForeground = true;
+        if (_shouldPlay) {
           // WebKit reclaims the shared audio session once the app is behind the
           // lock screen, which leaves the player running but mute. Start the
           // stretch clock the watchdog uses to decide on a preventive re-arm.
           _backgroundSince = DateTime.now();
           _silentHeals = 0;
+          _proactiveHealDone = false;
           _sessionConfirmedActive = false;
         }
         // Persist immediately: iOS may kill a suspended app at any time.
@@ -966,7 +1251,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
         if (_userPaused && !_resumeAfterInterruption) break;
         final processing = service.player.processingState;
         if (!wasBusy &&
-            !_isPlaying &&
+            !willPlay &&
             !_loading &&
             _errorText == null &&
             processing == ProcessingState.idle) {
@@ -977,6 +1262,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
           '离开时在用': wasBusy,
           '在加载': _loading,
           '在播': _isPlaying,
+          '想要声音': _shouldPlay,
           '原生状态': '$processing',
           '位置': '${_position.inSeconds}s',
           '离开时长': '${awayFor.inSeconds}s',
@@ -990,20 +1276,20 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> _resumeAfterForeground(Song song, {Duration awayFor = Duration.zero}) async {
     _userPaused = false;
-    await _activateSession();
+    final owned = await _activateSession(reason: '回前台');
     if (_disposed) return;
 
     // A load started while we were suspended is stuck waiting for the frozen
     // WebView. Cancel it and restart now that JavaScript runs again.
     if (_loading) {
       _playToken++;
-      await _loadAndPlay(song, initialPosition: _position);
+      await _loadAndPlay(song, initialPosition: _position, reason: '回前台重启加载');
       return;
     }
 
     final processing = service.player.processingState;
     if (_errorText != null || processing == ProcessingState.idle) {
-      await _loadAndPlay(song, initialPosition: _position);
+      await _loadAndPlay(song, initialPosition: _position, reason: '回前台重载');
       return;
     }
 
@@ -1014,8 +1300,11 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
 
-    if (!_isPlaying) {
-      await service.play();
+    if (!_isPlaying || !owned) {
+      // Either the player really stopped, or the session would not become ours
+      // again — in both cases "keep going" cannot be trusted and the item has to
+      // be re-armed rather than merely resumed.
+      await _healSilence();
       return;
     }
 
@@ -1030,6 +1319,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
         '离开时长': '${awayFor.inSeconds}s',
         '位置': '${_position.inSeconds}s',
         '原生状态': '$processing',
+        '会话已接管': owned,
         '已重挂次数': _silentHeals,
       });
       await _healSilence();
@@ -1042,6 +1332,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> setPlayMode(PlayMode mode) async {
+    if (appState.settings.playMode != mode) _invalidatePlan();
     appState.settings.playMode = mode;
     await appState.repository.save();
     _notify();
@@ -1096,7 +1387,11 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     final index = _queue.indexWhere((item) => item.id == song.id && item.source == song.source);
     if (index < 0) return;
     _queue.removeAt(index);
+    // Removing an entry shifts every later index, so the pre-computed order no
+    // longer refers to the right songs.
+    _invalidatePlan();
     if (_queue.isEmpty) {
+      _shouldPlay = false;
       await service.stop();
       _current = null;
       _index = -1;
@@ -1108,7 +1403,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       _index--;
     } else if (index == _index) {
       _index = min(_index, _queue.length - 1);
-      await playSong(_queue[_index], queue: _queue, index: _index);
+      await playSong(_queue[_index], queue: _queue, index: _index, reason: '移出当前曲');
       return;
     }
     _notify();
@@ -1124,12 +1419,15 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     }
     _queue = shuffled;
     _index = 0;
+    _invalidatePlan();
     _notify();
   }
 
   Future<void> clearQueue() async {
     _playToken++;
     _autoSkips = 0;
+    _shouldPlay = false;
+    _invalidatePlan();
     _queue = <Song>[];
     _index = -1;
     _current = null;
@@ -1189,6 +1487,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     }
     service.onSkipNext = null;
     service.onSkipPrevious = null;
+    service.onPlayRequest = null;
     service.onCompleted = null;
     service.onExternalPause = null;
     service.onPlayError = null;
