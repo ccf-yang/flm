@@ -123,6 +123,40 @@ const kwCompatPlugin = {
   },
 }
 
+// Netease killed anonymous `api/linux/forward` (风控), so the upstream
+// wy/songList.js playlist detail request always fails and the UI reports
+// "try max num".  /weapi/v3/playlist/detail answers the same shape
+// (playlist.trackIds + root privileges) and is what the working wy
+// leaderboard already uses, so switch the playlist detail over to it.
+const wyCompatPlugin = {
+  name: 'wy-playlist-detail-compat',
+  setup(build) {
+    build.onLoad({ filter: /[\\/]wy[\\/]songList\.js$/ }, (args) => {
+      const source = fs.readFileSync(args.path, 'utf8')
+      const legacy =
+        /const requestObj_listDetail = httpFetch\('https:\/\/music\.163\.com\/api\/linux\/forward',\s*\{[\s\S]*?\n {4}\}\)/
+      if (!legacy.test(source)) return { contents: source, loader: 'js' }
+      const patched = source.replace(
+        legacy,
+        `const requestObj_listDetail = httpFetch('https://music.163.com/weapi/v3/playlist/detail', {
+      method: 'post',
+      headers: {
+        Cookie: this.cookie,
+      },
+      credentials: 'omit',
+      cache: 'default',
+      form: weapi({
+        id,
+        n: this.limit_song,
+        p: 1,
+      }),
+    })`,
+      )
+      return { contents: patched, loader: 'js' }
+    })
+  },
+}
+
 await esbuild.build({
   entryPoints: [path.join(here, 'entry.js')],
   bundle: true,
@@ -137,7 +171,7 @@ await esbuild.build({
     'process.env.NODE_ENV': '"production"',
     global: 'globalThis',
   },
-  plugins: [aliasPlugin, kwCompatPlugin],
+  plugins: [aliasPlugin, kwCompatPlugin, wyCompatPlugin],
   logLevel: 'info',
 })
 

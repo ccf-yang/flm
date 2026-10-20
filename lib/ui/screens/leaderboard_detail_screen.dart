@@ -11,6 +11,7 @@ import '../../state/library_state.dart';
 import '../../state/player_state.dart';
 import '../kit.dart';
 import '../widgets/active_song_tile.dart';
+import '../widgets/cover_image.dart';
 import '../widgets/empty_state.dart';
 import '../widgets/song_actions_sheet.dart';
 import '../widgets/song_tile.dart' show srcShortLabel;
@@ -101,11 +102,9 @@ class _LeaderboardDetailScreenState extends State<LeaderboardDetailScreen> {
                 opacity: auroraIsDark(context) ? 0.30 : 0.16,
                 child: ImageFiltered(
                   imageFilter: ImageFilter.blur(sigmaX: 46, sigmaY: 46),
-                  child: Image.network(
-                    widget.coverUrl,
-                    fit: BoxFit.cover,
+                  child: CoverImage(
+                    url: widget.coverUrl,
                     gaplessPlayback: true,
-                    errorBuilder: (_, __, ___) => const SizedBox.shrink(),
                   ),
                 ),
               ),
@@ -279,11 +278,7 @@ class _Hero extends StatelessWidget {
                         mark: srcShortLabel(source),
                       ),
                       if (coverUrl.isNotEmpty)
-                        Image.network(
-                          coverUrl,
-                          fit: BoxFit.cover,
-                          errorBuilder: (_, __, ___) => const SizedBox.shrink(),
-                        ),
+                        CoverImage(url: coverUrl),
                     ],
                   ),
                 ),

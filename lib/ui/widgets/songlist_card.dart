@@ -4,6 +4,7 @@ import '../../core/formatters.dart';
 import '../../core/theme.dart';
 import '../kit.dart';
 import '../widgets/song_tile.dart' show srcShortLabel;
+import 'cover_image.dart';
 
 class SonglistCard extends StatelessWidget {
   const SonglistCard({
@@ -53,15 +54,7 @@ class SonglistCard extends StatelessWidget {
                     ),
                     if (image.isNotEmpty)
                       Positioned.fill(
-                        child: Image.network(
-                          image,
-                          fit: BoxFit.cover,
-                          errorBuilder: (_, __, ___) => const SizedBox.shrink(),
-                          loadingBuilder: (context, child, progress) {
-                            if (progress == null) return child;
-                            return const SizedBox.shrink();
-                          },
-                        ),
+                        child: CoverImage(url: image),
                       ),
                     Positioned(
                       top: 8,

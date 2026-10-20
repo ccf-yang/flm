@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../models/song.dart';
 import '../kit.dart';
+import 'cover_image.dart';
 
 class CoverArt extends StatelessWidget {
   const CoverArt({
@@ -34,16 +35,11 @@ class CoverArt extends StatelessWidget {
           errorBuilder: (_, __, ___) => _placeholder(context),
         );
       } else if (current.picUrl.isNotEmpty) {
-        image = Image.network(
-          current.picUrl,
+        image = CoverImage(
+          url: current.picUrl,
           width: size,
           height: size,
-          fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) => _placeholder(context),
-          loadingBuilder: (context, child, progress) {
-            if (progress == null) return child;
-            return _placeholder(context);
-          },
+          placeholder: _placeholder,
         );
       }
     }

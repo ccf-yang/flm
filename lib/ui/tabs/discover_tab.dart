@@ -8,6 +8,7 @@ import '../../state/discover_state.dart';
 import '../kit.dart';
 import '../root_shell.dart' show kRootChromeSpace;
 import '../screens/songlist_detail_screen.dart';
+import '../widgets/cover_image.dart';
 import '../widgets/empty_state.dart';
 import '../widgets/songlist_card.dart';
 import '../widgets/source_chips.dart';
@@ -272,15 +273,7 @@ class _FeaturedCard extends StatelessWidget {
             ),
             if (image.isNotEmpty)
               Positioned.fill(
-                child: Image.network(
-                  image,
-                  fit: BoxFit.cover,
-                  errorBuilder: (_, __, ___) => const SizedBox.shrink(),
-                  loadingBuilder: (context, child, progress) {
-                    if (progress == null) return child;
-                    return const SizedBox.shrink();
-                  },
-                ),
+                child: CoverImage(url: image),
               ),
             const Positioned.fill(
               child: DecoratedBox(
