@@ -174,7 +174,7 @@ class _QueueSheetState extends State<_QueueSheet> {
         bottom: true,
         child: ConstrainedBox(
           constraints: BoxConstraints(
-            maxHeight: MediaQuery.sizeOf(context).height * 0.92,
+            maxHeight: MediaQuery.sizeOf(context).height * 0.66,
           ),
           child: Container(
             decoration: BoxDecoration(

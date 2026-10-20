@@ -219,10 +219,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                         ),
                       ),
                       _SeekBar(player: player),
-                      _Controls(
-                        player: player,
-                        onOpenSettings: () => _showPlaybackSheet(context, song),
-                      ),
+                      _Controls(player: player),
                       const SizedBox(height: 4),
                       _UpNextBar(player: player),
                     ],
@@ -976,13 +973,9 @@ class _SeekBarState extends State<_SeekBar>
 }
 
 class _Controls extends StatelessWidget {
-  const _Controls({
-    required this.player,
-    required this.onOpenSettings,
-  });
+  const _Controls({required this.player});
 
   final PlayerController player;
-  final VoidCallback onOpenSettings;
 
   static IconData _modeIcon(PlayMode mode) {
     switch (mode) {
@@ -1017,13 +1010,13 @@ class _Controls extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final speed = player.appState.settings.speed;
-    final offSpeed = (speed - 1.0).abs() > 0.001;
-
+    // The speed pill used to sit on the right; it is redundant now that 倍速
+    // lives in the ⋯ panel, so the transport is the classic 4: mode · prev ·
+    // play · next. An invisible mirror of the mode button keeps the play
+    // button dead-centre.
     return Padding(
       padding: const EdgeInsets.only(top: 2, bottom: 2),
       child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: <Widget>[
           _Ctrl(
             icon: _modeIcon(player.playMode),
@@ -1034,6 +1027,7 @@ class _Controls extends StatelessWidget {
               flmToast(context, '播放模式：${next.label}');
             },
           ),
+          const Spacer(),
           // Long-press keeps the two fine adjustments that used to live on the
           // removed toolbar without adding a sixth button.
           _Ctrl(
@@ -1044,6 +1038,7 @@ class _Controls extends StatelessWidget {
             onTap: player.previous,
             onLongPress: () => _nudgeVolume(context),
           ),
+          const SizedBox(width: 14),
           Pressable(
             onTap: player.togglePlay,
             child: Container(
@@ -1081,6 +1076,7 @@ class _Controls extends StatelessWidget {
                     ),
             ),
           ),
+          const SizedBox(width: 14),
           _Ctrl(
             icon: CupertinoIcons.forward_fill,
             size: 56,
@@ -1089,30 +1085,12 @@ class _Controls extends StatelessWidget {
             onTap: player.next,
             onLongPress: () => _fastForward(context),
           ),
-          Pressable(
-            onTap: onOpenSettings,
-            child: Container(
-              height: 32,
-              padding: const EdgeInsets.symmetric(horizontal: 10),
-              decoration: BoxDecoration(
-                color: offSpeed
-                    ? const Color(0x1F9AF4D2)
-                    : const Color(0x12FFFFFF),
-                borderRadius: BorderRadius.circular(11),
-                border: Border.all(
-                  color: offSpeed
-                      ? const Color(0x4D9AF4D2)
-                      : const Color(0x1FFFFFFF),
-                ),
-              ),
-              child: Text(
-                '${speed.toStringAsFixed(speed % 1 == 0 ? 1 : 2)}×',
-                style: TextStyle(
-                  fontSize: 11.5,
-                  fontWeight: FontWeight.w700,
-                  color: offSpeed ? AppColors.accentDark : const Color(0xB3FFFFFF),
-                ),
-              ),
+          const Spacer(),
+          // Balance the left-hand mode button so the play button stays centred.
+          IgnorePointer(
+            child: Opacity(
+              opacity: 0,
+              child: _Ctrl(icon: _modeIcon(player.playMode), onTap: () {}),
             ),
           ),
         ],
@@ -1286,6 +1264,7 @@ Future<void> _showPlaybackSheet(BuildContext context, Song song) {
   return showFlmSheet<void>(
     context,
     title: '播放设置',
+    maxHeight: 0.66,
     titleTrailing: Consumer<PlayerController>(
       builder: (context, player, _) {
         final sleep = player.sleepRemaining;
@@ -1308,15 +1287,23 @@ Future<void> _showPlaybackSheet(BuildContext context, Song song) {
       },
     ),
     child: Builder(
-      builder: (sheetContext) => Consumer<PlayerController>(
-        builder: (context, player, _) {
+      builder: (sheetContext) => Consumer2<PlayerController, LibraryState>(
+        builder: (context, player, library, _) {
           final settings = player.appState.settings;
+          final loved = library.isLoved(song);
           return Padding(
             padding: const EdgeInsets.fromLTRB(6, 2, 6, 16),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
+                _quickActions(
+                  context,
+                  player: player,
+                  library: library,
+                  song: song,
+                  loved: loved,
+                ),
                 _settingsRow(
                   context,
                   icon: CupertinoIcons.speaker_2_fill,
@@ -1377,14 +1364,6 @@ Future<void> _showPlaybackSheet(BuildContext context, Song song) {
                 ),
                 _settingsRow(
                   context,
-                  icon: CupertinoIcons.info_circle,
-                  label: '歌曲详情',
-                  caption: '专辑、来源、可执行的歌曲操作',
-                  value: '›',
-                  onTap: () => showSongActions(context, song),
-                ),
-                _settingsRow(
-                  context,
                   icon: CupertinoIcons.arrow_clockwise,
                   label: '重载歌词',
                   caption: '歌词不匹配或没有歌词时试试',
@@ -1401,6 +1380,128 @@ Future<void> _showPlaybackSheet(BuildContext context, Song song) {
       ),
     ),
   );
+}
+
+/// The four actions people reach for constantly — favourite, add to a list,
+/// copy the title, and "not interested". They used to be buried two levels deep
+/// behind 歌曲详情, so they live flat across the top of the ⋯ panel now.
+Widget _quickActions(
+  BuildContext context, {
+  required PlayerController player,
+  required LibraryState library,
+  required Song song,
+  required bool loved,
+}) {
+  final appState = context.read<AppState>();
+  return Padding(
+    padding: const EdgeInsets.fromLTRB(4, 2, 4, 6),
+    child: Row(
+      children: <Widget>[
+        Expanded(
+          child: _QuickActionChip(
+            icon: loved ? CupertinoIcons.heart_fill : CupertinoIcons.heart,
+            label: loved ? '已收藏' : '收藏',
+            active: loved,
+            activeColor: const Color(0xFFFF8F7A),
+            onTap: () {
+              final now = library.toggleLove(song);
+              flmToast(context, now ? '已收藏到「我喜欢」' : '已取消收藏');
+            },
+          ),
+        ),
+        Expanded(
+          child: _QuickActionChip(
+            icon: CupertinoIcons.music_note_list,
+            label: '加列表',
+            onTap: () {
+              showAddToPlaylist(context, song);
+            },
+          ),
+        ),
+        Expanded(
+          child: _QuickActionChip(
+            icon: CupertinoIcons.doc_on_doc,
+            label: '复制歌名',
+            onTap: () {
+              final text = song.singer.isEmpty
+                  ? song.name
+                  : '${song.name} - ${song.singer}';
+              Clipboard.setData(ClipboardData(text: text));
+              flmToast(context, '已复制歌名');
+            },
+          ),
+        ),
+        Expanded(
+          child: _QuickActionChip(
+            icon: CupertinoIcons.xmark_circle_fill,
+            label: '不感兴趣',
+            activeColor: coralFor(context),
+            onTap: () {
+              appState.dislike(song);
+              Navigator.pop(context);
+              if (player.isCurrent(song)) {
+                player.next();
+              }
+              flmToast(context, '已加入不喜欢规则');
+            },
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+class _QuickActionChip extends StatelessWidget {
+  const _QuickActionChip({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.active = false,
+    this.activeColor,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  final bool active;
+  final Color? activeColor;
+
+  @override
+  Widget build(BuildContext context) {
+    final tint = activeColor ?? accentFor(context);
+    final iconColor = active ? tint : mutedFor(context);
+    return Pressable(
+      onTap: onTap,
+      child: Container(
+        height: 72,
+        margin: const EdgeInsets.symmetric(horizontal: 4),
+        decoration: BoxDecoration(
+          color: active ? tint.withValues(alpha: 0.12) : surface2For(context),
+          borderRadius: BorderRadius.circular(15),
+          border: Border.all(
+            color: active ? tint.withValues(alpha: 0.42) : lineColor(context),
+          ),
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: <Widget>[
+            Icon(icon, size: 20, color: iconColor),
+            const SizedBox(height: 6),
+            Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 10.5,
+                fontWeight: FontWeight.w600,
+                color: active ? iconColor : textFor(context),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 Widget _settingsRow(

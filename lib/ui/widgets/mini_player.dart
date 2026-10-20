@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/theme.dart';
+import '../../models/app_settings.dart';
 import '../../models/song.dart';
 import '../../state/app_state.dart';
 import '../../state/player_state.dart';
@@ -96,7 +97,7 @@ class _MiniPlayerState extends State<MiniPlayer> {
       return const Positioned(left: 0, top: 0, child: SizedBox.shrink());
     }
 
-    final settings = context.read<AppState>().settings;
+    final settings = context.watch<AppState>().settings;
     final storedX = settings.miniPlayerX;
     final storedY = settings.miniPlayerY;
     final stored = storedX >= 0 && storedY >= 0
@@ -150,7 +151,15 @@ class _MiniPlayerState extends State<MiniPlayer> {
           duration: const Duration(milliseconds: 160),
           curve: AuroraMotion.spring,
           scale: _dragging ? 1.06 : (_pressed ? 0.95 : 1),
-          child: _GlassPendant(song: song, player: player),
+          child: Opacity(
+            opacity: settings.miniPlayerOpacity.clamp(0.3, 1.0).toDouble(),
+            child: _GlassPendant(
+              song: song,
+              player: player,
+              shape: settings.miniPlayerShape,
+              accent: Color(AppSettings.miniPlayerColorValue(settings.miniPlayerColor)),
+            ),
+          ),
         ),
       ),
     );
@@ -158,83 +167,130 @@ class _MiniPlayerState extends State<MiniPlayer> {
 }
 
 class _GlassPendant extends StatelessWidget {
-  const _GlassPendant({required this.song, required this.player});
+  const _GlassPendant({
+    required this.song,
+    required this.player,
+    required this.shape,
+    required this.accent,
+  });
 
   final Song song;
   final PlayerController player;
+  final String shape;
+  final Color accent;
+
+  static const double _box = MiniPlayer.diameter;
 
   @override
   Widget build(BuildContext context) {
     final isDark = auroraIsDark(context);
-    const diameter = MiniPlayer.diameter;
     final durationMs = player.duration.inMilliseconds;
     final progress = durationMs > 0
-        ? (player.position.inMilliseconds / durationMs).clamp(0.0, 1.0).toDouble()
+        ? (player.position.inMilliseconds / durationMs)
+            .clamp(0.0, 1.0)
+            .toDouble()
         : 0.0;
+
+    // Silhouette metrics. Everything is centred in the fixed 66x66 hit area so
+    // the draggable position math never changes — only the drawn shape does.
+    final double discW;
+    final double discH;
+    final double corner;
+    final double cover;
+    switch (shape) {
+      case 'oval':
+        discW = _box;
+        discH = 52;
+        corner = discH / 2;
+        cover = discH - 16;
+      case 'rect':
+        discW = 60;
+        discH = 60;
+        corner = 16;
+        cover = 44;
+      default:
+        discW = _box;
+        discH = _box;
+        corner = _box / 2;
+        cover = 48;
+    }
+    final bool isRect = shape == 'rect';
+    final BorderRadius discRadius = BorderRadius.circular(corner);
     final ringColor =
-        player.errorText != null ? coralFor(context) : accentFor(context);
+        player.errorText != null ? coralFor(context) : accent;
+    final topInset = (_box - discH) / 2;
+
+    // Frosted glass disc. The shape outline and its border are drawn by the
+    // progress ring's track stroke, so the fill itself needs no border.
+    final Widget glass = Container(
+      width: discW,
+      height: discH,
+      decoration: BoxDecoration(
+        borderRadius: discRadius,
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: isDark
+              ? <Color>[
+                  const Color(0x26FFFFFF),
+                  surfaceFor(context),
+                  const Color(0x0DFFFFFF),
+                ]
+              : <Color>[
+                  const Color(0xF2FFFFFF),
+                  surfaceFor(context),
+                  const Color(0xB3FFFFFF),
+                ],
+          stops: const <double>[0, 0.55, 1],
+        ),
+      ),
+    );
 
     return SizedBox(
-      width: diameter,
-      height: diameter,
+      width: _box,
+      height: _box,
       child: Stack(
         alignment: Alignment.center,
         children: <Widget>[
-          // Drop shadow, painted outside the clipped glass so it stays visible.
-          Positioned.fill(
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                boxShadow: <BoxShadow>[
-                  BoxShadow(
-                    color: player.willPlay
-                        ? accentFor(context).withValues(alpha: 0.22)
-                        : Colors.black.withValues(
-                            alpha: isDark ? 0.34 : 0.16,
-                          ),
-                    blurRadius: player.willPlay ? 30 : 24,
-                    offset: const Offset(0, 10),
-                  ),
-                ],
-              ),
-              child: const SizedBox.expand(),
-            ),
-          ),
-          // Frosted glass disc (`backdrop-filter: blur(26px)` in the study).
-          ClipOval(
-            child: BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 26, sigmaY: 26),
-              child: Container(
-                width: diameter,
-                height: diameter,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: isDark
-                        ? <Color>[
-                            const Color(0x26FFFFFF),
-                            surfaceFor(context),
-                            const Color(0x0DFFFFFF),
-                          ]
-                        : <Color>[
-                            const Color(0xF2FFFFFF),
-                            surfaceFor(context),
-                            const Color(0xB3FFFFFF),
-                          ],
-                    stops: const <double>[0, 0.55, 1],
-                  ),
-                  border: Border.all(color: lineStrongColor(context)),
+          // Drop shadow, painted behind the glass so it stays visible.
+          Container(
+            width: discW,
+            height: discH,
+            decoration: BoxDecoration(
+              borderRadius: discRadius,
+              boxShadow: <BoxShadow>[
+                BoxShadow(
+                  color: player.willPlay
+                      ? ringColor.withValues(alpha: 0.24)
+                      : Colors.black.withValues(
+                          alpha: isDark ? 0.34 : 0.16,
+                        ),
+                  blurRadius: player.willPlay ? 30 : 24,
+                  offset: const Offset(0, 10),
                 ),
-              ),
+              ],
             ),
           ),
-          // Glass rim highlight.
+          if (isRect)
+            ClipRRect(
+              borderRadius: discRadius,
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 26, sigmaY: 26),
+                child: glass,
+              ),
+            )
+          else
+            ClipOval(
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 26, sigmaY: 26),
+                child: glass,
+              ),
+            ),
+          // Glass rim highlight, near the top edge of the disc.
           Positioned(
-            left: diameter * 0.18,
-            right: diameter * 0.18,
-            top: 4,
+            left: discW * 0.22,
+            right: discW * 0.22,
+            top: topInset + 4,
             child: Container(
               height: 1,
               decoration: BoxDecoration(
@@ -249,25 +305,35 @@ class _GlassPendant extends StatelessWidget {
               ),
             ),
           ),
-          CoverArt(song: song, size: 48, radius: 24),
-          // Progress ring (or a spinner while the URL is being fetched).
+          // Centre medallion: the chosen colour backs the artwork, so the
+          // "center image colour" reads clearly behind the cover.
+          Container(
+            width: cover + 12,
+            height: cover + 12,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(isRect ? (cover + 12) / 2 * 0.55 : (cover + 12) / 2),
+              color: accent.withValues(alpha: 0.18),
+              border: Border.all(color: accent.withValues(alpha: 0.5)),
+            ),
+          ),
+          CoverArt(
+            song: song,
+            size: cover,
+            radius: isRect ? 12 : cover / 2,
+          ),
+          // Progress ring, tracing the disc outline for every shape.
           Positioned.fill(
-            child: player.loading
-                ? Padding(
-                    padding: const EdgeInsets.all(1.5),
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2.4,
-                      color: ringColor,
-                    ),
-                  )
-                : CustomPaint(
-                    painter: _RingPainter(
-                      progress: progress,
-                      color: ringColor,
-                      trackColor: lineColor(context),
-                      thickness: 2.4,
-                    ),
-                  ),
+            child: CustomPaint(
+              painter: _RingPainter(
+                progress: player.loading ? 1 : progress,
+                color: ringColor,
+                trackColor: lineStrongColor(context),
+                thickness: 2.4,
+                discW: discW,
+                discH: discH,
+                corner: isRect ? corner : 0,
+              ),
+            ),
           ),
         ],
       ),
@@ -281,41 +347,65 @@ class _RingPainter extends CustomPainter {
     required this.color,
     required this.trackColor,
     required this.thickness,
+    required this.discW,
+    required this.discH,
+    required this.corner,
   });
 
   final double progress;
   final Color color;
   final Color trackColor;
   final double thickness;
+  final double discW;
+  final double discH;
+  final double corner;
 
   @override
   void paint(Canvas canvas, Size size) {
-    final center = Offset(size.width / 2, size.height / 2);
-    final radius = size.width / 2 - thickness / 2 - 0.5;
-    final rect = Rect.fromCircle(center: center, radius: radius);
+    final pad = thickness / 2 + 0.5;
+    final Rect base = Rect.fromCenter(
+      center: Offset(size.width / 2, size.height / 2),
+      width: discW,
+      height: discH,
+    );
+    final Rect inner = Rect.fromLTRB(
+      base.left + pad,
+      base.top + pad,
+      base.right - pad,
+      base.bottom - pad,
+    );
 
-    canvas.drawCircle(
-      center,
-      radius,
+    final Path outline = Path();
+    if (corner > 0) {
+      outline.addRRect(
+        RRect.fromRectAndRadius(
+          inner,
+          Radius.circular(math.max(0.0, corner - pad)),
+        ),
+      );
+    } else {
+      outline.addOval(inner);
+    }
+
+    canvas.drawPath(
+      outline,
       Paint()
         ..color = trackColor
         ..style = PaintingStyle.stroke
         ..strokeWidth = thickness,
     );
 
-    if (progress > 0) {
-      canvas.drawArc(
-        rect,
-        -math.pi / 2,
-        2 * math.pi * progress,
-        false,
-        Paint()
-          ..color = color
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = thickness
-          ..strokeCap = StrokeCap.round,
-      );
-    }
+    if (progress <= 0) return;
+    final metric = outline.computeMetrics().first;
+    final arc = metric.extractPath(0, metric.length * progress);
+    canvas.drawPath(
+      arc,
+      Paint()
+        ..color = color
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = thickness
+        ..strokeCap = StrokeCap.round,
+    );
   }
 
   @override
@@ -323,5 +413,8 @@ class _RingPainter extends CustomPainter {
       oldDelegate.progress != progress ||
       oldDelegate.color != color ||
       oldDelegate.trackColor != trackColor ||
-      oldDelegate.thickness != thickness;
+      oldDelegate.thickness != thickness ||
+      oldDelegate.discW != discW ||
+      oldDelegate.discH != discH ||
+      oldDelegate.corner != corner;
 }

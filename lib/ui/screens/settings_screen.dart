@@ -70,6 +70,38 @@ class SettingsScreen extends StatelessWidget {
                               onSelected: (value) => appState.setThemeMode(value),
                             ),
                           ),
+                          _SettingRow(
+                            icon: CupertinoIcons.square,
+                            label: '挂件形状',
+                            caption: '悬浮播放入口的轮廓',
+                            value: _shapeLabel(settings.miniPlayerShape),
+                            onTap: () => _pickOption(
+                              context,
+                              title: '挂件形状',
+                              current: settings.miniPlayerShape,
+                              options: const <Map<String, String>>[
+                                <String, String>{'id': 'circle', 'name': '圆形'},
+                                <String, String>{'id': 'oval', 'name': '椭圆'},
+                                <String, String>{'id': 'rect', 'name': '方形'},
+                              ],
+                              onSelected: (value) => appState.update(
+                                (item) => item.miniPlayerShape = value,
+                              ),
+                            ),
+                          ),
+                          _SettingRow(
+                            icon: CupertinoIcons.paintbrush_fill,
+                            label: '中心配色',
+                            caption: '封面底板与进度环颜色',
+                            trailing: _colorDot(settings.miniPlayerColor),
+                            onTap: () => _pickMiniColor(context, appState),
+                          ),
+                          _SettingRow(
+                            icon: CupertinoIcons.drop,
+                            label: '挂件透明度',
+                            value: '${(settings.miniPlayerOpacity * 100).round()}%',
+                            onTap: () => _pickMiniOpacity(context, appState),
+                          ),
                         ],
                       ),
                       const SectionHead(title: '音乐平台'),
@@ -281,6 +313,151 @@ class SettingsScreen extends StatelessWidget {
       default:
         return '跟随系统';
     }
+  }
+
+  String _shapeLabel(String shape) {
+    switch (shape) {
+      case 'oval':
+        return '椭圆';
+      case 'rect':
+        return '方形';
+      default:
+        return '圆形';
+    }
+  }
+
+  Widget _colorDot(String id) {
+    final color = Color(AppSettings.miniPlayerColorValue(id));
+    return Container(
+      width: 18,
+      height: 18,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: color,
+        border: Border.all(color: color.withValues(alpha: 0.4), width: 3),
+      ),
+    );
+  }
+
+  static const Map<String, String> _colorNames = <String, String>{
+    'mint': '薄荷',
+    'coral': '珊瑚',
+    'gold': '琥珀',
+    'sky': '天蓝',
+    'violet': '紫罗兰',
+    'snow': '月白',
+  };
+
+  Future<void> _pickMiniColor(BuildContext context, AppState appState) async {
+    final current = appState.settings.miniPlayerColor;
+    await showFlmSheet<void>(
+      context,
+      title: '中心配色',
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 10, 14, 20),
+        child: Wrap(
+          spacing: 18,
+          runSpacing: 16,
+          alignment: WrapAlignment.center,
+          children: AppSettings.kMiniPlayerColors.entries.map((entry) {
+            final color = Color(entry.value);
+            final selected = entry.key == current;
+            return Pressable(
+              onTap: () {
+                appState.update((item) => item.miniPlayerColor = entry.key);
+                Navigator.pop(context);
+              },
+              child: SizedBox(
+                width: 52,
+                child: Column(
+                  children: <Widget>[
+                    Container(
+                      width: 40,
+                      height: 40,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: color,
+                        boxShadow: <BoxShadow>[
+                          if (selected)
+                            BoxShadow(
+                              color: color.withValues(alpha: 0.55),
+                              blurRadius: 14,
+                              spreadRadius: 2,
+                            ),
+                        ],
+                        border: Border.all(
+                          color: selected
+                              ? textFor(context)
+                              : Colors.transparent,
+                          width: 2,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 7),
+                    Text(
+                      _colorNames[entry.key] ?? entry.key,
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: selected ? textFor(context) : mutedFor(context),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }).toList(),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _pickMiniOpacity(BuildContext context, AppState appState) async {
+    await showFlmSheet<void>(
+      context,
+      title: '挂件透明度',
+      child: StatefulBuilder(
+        builder: (sheetContext, rebuild) {
+          final value = appState.settings.miniPlayerOpacity;
+          return Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 22),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                Text(
+                  '${(value * 100).round()}%',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800,
+                    color: textFor(context),
+                    fontFeatures: const <FontFeature>[
+                      FontFeature.tabularFigures(),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Slider(
+                  value: value.clamp(0.3, 1.0).toDouble(),
+                  min: 0.3,
+                  max: 1.0,
+                  activeColor: accentFor(context),
+                  onChanged: (next) {
+                    appState.update(
+                      (item) => item.miniPlayerOpacity = next,
+                    );
+                    rebuild(() {});
+                  },
+                ),
+                Text(
+                  '越接近 100% 越不透明，方便在不同背景下都看得清。',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 10.5, color: faintFor(context)),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
   }
 
   String _qualityLabel(String quality) {

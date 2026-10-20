@@ -29,6 +29,20 @@ class AppSettings {
     'mg',
   ];
 
+  /// Presets for the floating pendant's accent colour, id to ARGB value.
+  static const Map<String, int> kMiniPlayerColors = <String, int>{
+    'mint': 0xFF9AF4D2,
+    'coral': 0xFFFF8F7A,
+    'gold': 0xFFF2D08C,
+    'sky': 0xFF7EC8FF,
+    'violet': 0xFFC7A6FF,
+    'snow': 0xFFF3F6F4,
+  };
+
+  /// The pendant's accent colour value; falls back to mint for unknown ids.
+  static int miniPlayerColorValue(String id) =>
+      kMiniPlayerColors[id] ?? kMiniPlayerColors['mint']!;
+
   AppSettings({
     this.themeMode = 'system',
     this.quality = '320k',
@@ -50,6 +64,9 @@ class AppSettings {
     this.leaderboardSource = 'kw',
     this.miniPlayerX = -1,
     this.miniPlayerY = -1,
+    this.miniPlayerOpacity = 0.95,
+    this.miniPlayerShape = 'circle',
+    this.miniPlayerColor = 'mint',
     this.debugEnabled = false,
     this.showPlatformFilter = true,
     List<String>? visibleSources,
@@ -79,6 +96,11 @@ class AppSettings {
   /// usable area. Negative means "not set yet" (use the default corner).
   double miniPlayerX;
   double miniPlayerY;
+  /// Floating pendant style: overall opacity (0.3..1), silhouette shape, and
+  /// accent colour id (see [kMiniPlayerColors]).
+  double miniPlayerOpacity;
+  String miniPlayerShape;
+  String miniPlayerColor;
   /// Master switch for the request-recording debug page (off by default).
   bool debugEnabled;
   /// Whether 搜索 / 歌单 / 榜单 show the platform filter row at all.
@@ -195,6 +217,10 @@ class AppSettings {
       leaderboardSource: '${json['leaderboardSource'] ?? 'kw'}',
       miniPlayerX: (json['miniPlayerX'] as num?)?.toDouble() ?? -1,
       miniPlayerY: (json['miniPlayerY'] as num?)?.toDouble() ?? -1,
+      miniPlayerOpacity:
+          (json['miniPlayerOpacity'] as num?)?.toDouble() ?? 0.95,
+      miniPlayerShape: '${json['miniPlayerShape'] ?? 'circle'}',
+      miniPlayerColor: '${json['miniPlayerColor'] ?? 'mint'}',
       debugEnabled: json['debugEnabled'] == true,
       showPlatformFilter: json['showPlatformFilter'] != false,
       visibleSources: (json['visibleSources'] as List<dynamic>? ?? <dynamic>[])
@@ -225,6 +251,9 @@ class AppSettings {
         'leaderboardSource': leaderboardSource,
         'miniPlayerX': miniPlayerX,
         'miniPlayerY': miniPlayerY,
+        'miniPlayerOpacity': miniPlayerOpacity,
+        'miniPlayerShape': miniPlayerShape,
+        'miniPlayerColor': miniPlayerColor,
         'debugEnabled': debugEnabled,
         'showPlatformFilter': showPlatformFilter,
         'visibleSources': visibleSources,

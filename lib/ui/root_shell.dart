@@ -28,7 +28,8 @@ class RootShell extends StatefulWidget {
 }
 
 class _RootShellState extends State<RootShell> {
-  int _index = 0;
+  // 歌单 (DiscoverTab) is index 1 — the app opens there instead of search.
+  int _index = 1;
 
   @override
   void initState() {
