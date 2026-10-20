@@ -1194,49 +1194,68 @@ class _FlmSheet extends StatelessWidget {
           constraints: BoxConstraints(
             maxHeight: MediaQuery.sizeOf(context).height * maxHeight,
           ),
-          child: Container(
-            decoration: BoxDecoration(
-              color: panelFor(context),
-              borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
-              border: Border(top: BorderSide(color: lineStrongColor(context))),
-              boxShadow: const <BoxShadow>[
-                BoxShadow(color: Color(0x66000000), blurRadius: 40, offset: Offset(0, -12)),
-              ],
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: <Widget>[
-                const SizedBox(height: 10),
-                Container(
-                  width: 40,
-                  height: 4.5,
+          // Same rule as the shell: on a wide screen the panel is a readable
+          // column, not a sheet of glass stretched edge to edge.
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(
+                maxWidth: kAuroraContentMaxWidth,
+              ),
+              child: SizedBox(
+                width: double.infinity,
+                child: Container(
                   decoration: BoxDecoration(
-                    color: faintFor(context).withValues(alpha: 0.5),
-                    borderRadius: BorderRadius.circular(999),
+                    color: panelFor(context),
+                    borderRadius: const BorderRadius.vertical(
+                      top: Radius.circular(28),
+                    ),
+                    border:
+                        Border(top: BorderSide(color: lineStrongColor(context))),
+                    boxShadow: const <BoxShadow>[
+                      BoxShadow(
+                        color: Color(0x66000000),
+                        blurRadius: 40,
+                        offset: Offset(0, -12),
+                      ),
+                    ],
                   ),
-                ),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 14, 20, 10),
-                  child: Row(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
                     children: <Widget>[
-                      Expanded(
-                        child: Text(
-                          title,
-                          style: TextStyle(
-                            fontSize: 17,
-                            fontWeight: FontWeight.w700,
-                            letterSpacing: -0.3,
-                            color: textFor(context),
-                          ),
+                      const SizedBox(height: 10),
+                      Container(
+                        width: 40,
+                        height: 4.5,
+                        decoration: BoxDecoration(
+                          color: faintFor(context).withValues(alpha: 0.5),
+                          borderRadius: BorderRadius.circular(999),
                         ),
                       ),
-                      if (titleTrailing != null) titleTrailing!,
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(20, 14, 20, 10),
+                        child: Row(
+                          children: <Widget>[
+                            Expanded(
+                              child: Text(
+                                title,
+                                style: TextStyle(
+                                  fontSize: 17,
+                                  fontWeight: FontWeight.w700,
+                                  letterSpacing: -0.3,
+                                  color: textFor(context),
+                                ),
+                              ),
+                            ),
+                            if (titleTrailing != null) titleTrailing!,
+                          ],
+                        ),
+                      ),
+                      Flexible(child: child),
+                      const SizedBox(height: 8),
                     ],
                   ),
                 ),
-                Flexible(child: child),
-                const SizedBox(height: 8),
-              ],
+              ),
             ),
           ),
         ),

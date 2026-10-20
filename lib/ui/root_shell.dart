@@ -47,15 +47,27 @@ class _RootShellState extends State<RootShell> {
       body: Stack(
         children: <Widget>[
           const Positioned.fill(child: AuroraBackground()),
+          // The aurora chrome (tab bar, pendant) spans the window, but the
+          // content column stays readable on a tablet or an unfolded foldable
+          // instead of stretching one song row across the whole screen.
           Positioned.fill(
-            child: IndexedStack(
-              index: _index,
-              children: const <Widget>[
-                SearchTab(),
-                DiscoverTab(),
-                LeaderboardTab(),
-                LibraryTab(),
-              ],
+            child: Align(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(
+                  maxWidth: kAuroraContentMaxWidth,
+                ),
+                child: SizedBox.expand(
+                  child: IndexedStack(
+                    index: _index,
+                    children: const <Widget>[
+                      SearchTab(),
+                      DiscoverTab(),
+                      LeaderboardTab(),
+                      LibraryTab(),
+                    ],
+                  ),
+                ),
+              ),
             ),
           ),
           // Floating now-playing pendant. It manages its own Positioned so the

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+  Cold-start and the first frame behind the Flutter view. Keeping this in sync
+  with the aurora background tokens means no white flash on Android.
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/flm_launch_background"/>
+</layer-list>

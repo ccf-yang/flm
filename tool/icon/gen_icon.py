@@ -40,21 +40,31 @@ def capsule_distance(px, py, cx, top, bottom, radius):
     return math.hypot(dx, dy) - radius
 
 
-def render(size, ss):
+def render(size, ss, bars=True, scale=1.0):
+    """Render the icon plate.
+
+    `bars=False` keeps the gradient, glow and ring but drops the equalizer —
+    that is the adaptive-icon background layer, whose mark is a separate
+    foreground layer. `scale` zooms the whole composition about its centre,
+    which is how the mark is pulled into the adaptive icon's safe zone.
+    """
     width = size * ss
-    bars = (0.24, 0.43, 0.62, 0.43, 0.24)
+    bars_ = (0.24, 0.43, 0.62, 0.43, 0.24)
     bar_width = 0.078
     gap = 0.042
     total = 5 * bar_width + 4 * gap
     start = 0.5 - total / 2
     centers = [start + i * (bar_width + gap) + bar_width / 2 for i in range(5)]
+    # A scaled canvas means one device pixel covers 1/(width*scale) of the
+    # master geometry, so the antialias term has to shrink with it.
+    aa = width * scale
 
     pixels = []
     for y in range(width):
         row = []
-        ny = (y + 0.5) / width
+        ny = ((y + 0.5) / width - 0.5) / scale + 0.5
         for x in range(width):
-            nx = (x + 0.5) / width
+            nx = ((x + 0.5) / width - 0.5) / scale + 0.5
             t = clamp((nx + ny) / 2)
             color = (
                 int(DARK[0] + (TEAL[0] - DARK[0]) * t),
@@ -70,29 +80,30 @@ def render(size, ss):
 
             # Faint ring.
             ring_d = abs(math.hypot(nx - 0.5, ny - 0.5) - 0.355) - 0.005
-            ring_cov = clamp(0.5 - ring_d * width)
+            ring_cov = clamp(0.5 - ring_d * aa)
             if ring_cov > 0:
                 color = blend(color, (255, 255, 255), ring_cov * 0.07)
 
-            # Shadow of the equalizer.
-            for index, center in enumerate(centers):
-                height = bars[index]
-                top = 0.545 - height / 2 + 0.014
-                bottom = 0.545 + height / 2 + 0.014
-                d = capsule_distance(nx, ny, center, top, bottom, bar_width / 2)
-                cov = clamp(0.5 - d * width)
-                if cov > 0:
-                    color = blend(color, (0, 0, 0), cov * 0.18)
+            if bars:
+                # Shadow of the equalizer.
+                for index, center in enumerate(centers):
+                    height = bars_[index]
+                    top = 0.545 - height / 2 + 0.014
+                    bottom = 0.545 + height / 2 + 0.014
+                    d = capsule_distance(nx, ny, center, top, bottom, bar_width / 2)
+                    cov = clamp(0.5 - d * aa)
+                    if cov > 0:
+                        color = blend(color, (0, 0, 0), cov * 0.18)
 
-            # Equalizer bars.
-            for index, center in enumerate(centers):
-                height = bars[index]
-                top = 0.545 - height / 2
-                bottom = 0.545 + height / 2
-                d = capsule_distance(nx, ny, center, top, bottom, bar_width / 2)
-                cov = clamp(0.5 - d * width)
-                if cov > 0:
-                    color = blend(color, MINT if index == 2 else WHITE, cov)
+                # Equalizer bars.
+                for index, center in enumerate(centers):
+                    height = bars_[index]
+                    top = 0.545 - height / 2
+                    bottom = 0.545 + height / 2
+                    d = capsule_distance(nx, ny, center, top, bottom, bar_width / 2)
+                    cov = clamp(0.5 - d * aa)
+                    if cov > 0:
+                        color = blend(color, MINT if index == 2 else WHITE, cov)
 
             row.append(color)
         pixels.append(row)
@@ -120,11 +131,12 @@ def render(size, ss):
 def write_png(path, pixels):
     height = len(pixels)
     width = len(pixels[0])
+    has_alpha = len(pixels[0][0]) == 4
     raw = bytearray()
     for row in pixels:
         raw.append(0)
-        for r, g, b in row:
-            raw.extend((r, g, b))
+        for pixel in row:
+            raw.extend(pixel)
 
     def chunk(kind, data):
         return (
@@ -136,7 +148,7 @@ def write_png(path, pixels):
 
     png = (
         b"\x89PNG\r\n\x1a\n"
-        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6 if has_alpha else 2, 0, 0, 0))
         + chunk(b"IDAT", zlib.compress(bytes(raw), 9))
         + chunk(b"IEND", b"")
     )
@@ -162,6 +174,99 @@ ICONS = [
     ("Icon-App-83.5x83.5@2x.png", 167),
     ("Icon-App-1024x1024@1x.png", 1024),
 ]
+
+# Android. A legacy launcher icon is just the artwork at 48/72/96/144/192, but
+# an adaptive icon is drawn on a 108dp canvas whose outer band the launcher
+# masks away (circle, squircle, ...). So the plate and the equalizer mark become
+# two layers, and the mark is shrunk into the central safe zone.
+ANDROID_LEGACY = [
+    ("mipmap-mdpi", 48),
+    ("mipmap-hdpi", 72),
+    ("mipmap-xhdpi", 96),
+    ("mipmap-xxhdpi", 144),
+    ("mipmap-xxxhdpi", 192),
+]
+ANDROID_ADAPTIVE = [
+    ("mipmap-mdpi", 108),
+    ("mipmap-hdpi", 162),
+    ("mipmap-xhdpi", 216),
+    ("mipmap-xxhdpi", 324),
+    ("mipmap-xxxhdpi", 432),
+]
+MARK_SCALE = 0.68
+
+BAR_HEIGHTS = (0.24, 0.43, 0.62, 0.43, 0.24)
+BAR_WIDTH = 0.078
+BAR_GAP = 0.042
+BAR_CENTERS = [
+    (0.5 - (5 * BAR_WIDTH + 4 * BAR_GAP) / 2)
+    + index * (BAR_WIDTH + BAR_GAP)
+    + BAR_WIDTH / 2
+    for index in range(5)
+]
+
+
+def render_mark(size, scale=MARK_SCALE):
+    """The equalizer alone, on transparency, centred in the safe zone."""
+    pixels = []
+    for y in range(size):
+        row = []
+        ny = (((y + 0.5) / size) - 0.5) / scale + 0.545
+        for x in range(size):
+            nx = (((x + 0.5) / size) - 0.5) / scale + 0.5
+            coverage = 0.0
+            color = WHITE
+            for index, center in enumerate(BAR_CENTERS):
+                height = BAR_HEIGHTS[index]
+                d = capsule_distance(
+                    nx,
+                    ny,
+                    center,
+                    0.545 - height / 2,
+                    0.545 + height / 2,
+                    BAR_WIDTH / 2,
+                )
+                cov = clamp(0.5 - d * size * scale)
+                if cov > coverage:
+                    coverage = cov
+                    color = MINT if index == 2 else WHITE
+            row.append((color[0], color[1], color[2], int(round(coverage * 255))))
+        pixels.append(row)
+    return pixels
+
+
+def crop_circle(pixels):
+    size = len(pixels)
+    radius = size / 2
+    out = []
+    for y in range(size):
+        row = []
+        for x in range(size):
+            r, g, b = pixels[y][x]
+            edge = radius - math.hypot(x + 0.5 - radius, y + 0.5 - radius) + 0.5
+            row.append((r, g, b, int(round(clamp(edge) * 255))))
+        out.append(row)
+    return out
+
+
+def write_android():
+    res = os.path.join(ROOT, "tool", "android_overlay", "res")
+    for folder, size in ANDROID_LEGACY:
+        target = os.path.join(res, folder)
+        os.makedirs(target, exist_ok=True)
+        art = render(size, 2 if size <= 96 else 1)
+        write_png(os.path.join(target, "ic_launcher.png"), art)
+        write_png(os.path.join(target, "ic_launcher_round.png"), crop_circle(art))
+        print("android legacy", folder, size)
+    for folder, size in ANDROID_ADAPTIVE:
+        target = os.path.join(res, folder)
+        os.makedirs(target, exist_ok=True)
+        plate = render(size, 1, bars=False)
+        mark = render_mark(size)
+        write_png(os.path.join(target, "ic_launcher_background.png"), plate)
+        write_png(os.path.join(target, "ic_launcher_foreground.png"), mark)
+        write_png(os.path.join(target, "ic_launcher_monochrome.png"), mark)
+        print("android adaptive", folder, size)
 
 
 def main():
@@ -210,4 +315,15 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+
+    # `--android` regenerates only the launcher resources (fast), `--ios` only
+    # the iOS icon set, and no argument does both.
+    which = sys.argv[1] if len(sys.argv) > 1 else ""
+    if which == "--android":
+        write_android()
+    elif which == "--ios":
+        main()
+    else:
+        main()
+        write_android()

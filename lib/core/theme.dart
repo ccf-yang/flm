@@ -68,6 +68,34 @@ class AuroraMotion {
 bool auroraIsDark(BuildContext context) =>
     Theme.of(context).brightness == Brightness.dark;
 
+/// The aurora layout is a phone layout: rows, pills and the pendant are sized
+/// for a ~390-430dp viewport. On a tablet or an unfolded foldable the content
+/// column is centred at this width instead of stretching a song row across
+/// 900dp.
+const double kAuroraContentMaxWidth = 560.0;
+
+/// iOS-style scrolling on every platform.
+///
+/// Android's default behaviour paints the blue Material glow over the content
+/// when a list is dragged past its end, which fights the frosted panels, and
+/// it clamps hard instead of rubber-banding. Both are replaced here so the
+/// gesture feel matches the look the design was drawn for.
+class AuroraScrollBehavior extends MaterialScrollBehavior {
+  const AuroraScrollBehavior();
+
+  @override
+  ScrollPhysics getScrollPhysics(BuildContext context) =>
+      const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics());
+
+  @override
+  Widget buildOverscrollIndicator(
+    BuildContext context,
+    Widget child,
+    ScrollableDetails details,
+  ) =>
+      child;
+}
+
 Color bgFor(BuildContext context) =>
     auroraIsDark(context) ? AppColors.darkBg : AppColors.lightBg;
 
