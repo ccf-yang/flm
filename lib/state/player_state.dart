@@ -70,8 +70,10 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     service.onCompleted = _handleCompleted;
     service.onExternalPause = () {
       // A pause from the lock screen / control centre is deliberate: never
-      // auto-restart it when the app comes back.
+      // auto-restart it when the app comes back, not even if an audio
+      // interruption was still flagged as resumable.
       _userPaused = true;
+      _resumeAfterInterruption = false;
       _resumeOnForeground = false;
     };
     sourceState.addListener(_onSourceChanged);
@@ -553,8 +555,10 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     if (_loading) {
       _playToken++;
       _loading = false;
+      _handedOff = false;
       _isPlaying = false;
       _userPaused = true;
+      _resumeAfterInterruption = false;
       _statusText = '已停止';
       _errorText = null;
       unawaited(service.pause());
@@ -567,6 +571,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     }
     if (_isPlaying) {
       _userPaused = true;
+      _resumeAfterInterruption = false;
       await service.pause();
       return;
     }
@@ -608,6 +613,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     _loading = false;
     _handedOff = false;
     _userPaused = true;
+    _resumeAfterInterruption = false;
     // The fetching hint belongs to a load that is now abandoned; leaving it up
     // makes a paused track look like it is still looking for a link.
     if (_statusText == '正在获取播放链接…' ||
