@@ -145,7 +145,7 @@ class FlmPlayerService {
     if (initialPosition > Duration.zero) {
       await _player.seek(initialPosition);
     }
-    await _player.play();
+    _start();
   }
 
   Future<void> playFile(String path, {Duration initialPosition = Duration.zero}) async {
@@ -153,10 +153,18 @@ class FlmPlayerService {
     if (initialPosition > Duration.zero) {
       await _player.seek(initialPosition);
     }
-    await _player.play();
+    _start();
   }
 
-  Future<void> play() => _player.play();
+  /// `AudioPlayer.play()` only completes when playback *stops* — awaiting it
+  /// would hang the caller for the whole track, which is why the player used to
+  /// stay on "正在获取播放链接…" forever and never reached the post-load work
+  /// (lyrics, queue persistence, preloading the next song).
+  void _start() {
+    unawaited(_player.play().catchError((Object _) {}));
+  }
+
+  Future<void> play() async => _start();
 
   Future<void> pause() => _player.pause();
 
