@@ -9,6 +9,10 @@ import '../models/custom_source.dart';
 class CustomSourceRepository {
   CustomSourceRepository._(this._dir, this._indexFile, this.sources);
 
+  /// Batch probing (自动导入源 / web探测导入源) can legitimately land a couple of
+  /// dozen working scripts at once, so the hand-import era's cap of 20 is gone.
+  static const int maxSources = 100;
+
   final Directory _dir;
   final File _indexFile;
   final List<CustomSourceInfo> sources;
@@ -53,6 +57,9 @@ class CustomSourceRepository {
     return null;
   }
 
+  List<CustomSourceInfo> byGroup(String group) =>
+      sources.where((source) => source.group == group).toList(growable: false);
+
   Future<String?> scriptFor(String id) async {
     final file = File(p.join(_dir.path, '$id.js'));
     if (!await file.exists()) return null;
@@ -63,14 +70,15 @@ class CustomSourceRepository {
     String script, {
     String? fileName,
     String? importUrl,
+    String group = sourceGroupManual,
   }) async {
-    if (sources.length >= 20) {
-      throw const FormatException('最多只能同时存在 20 个自定义源');
+    if (sources.length >= maxSources) {
+      throw const FormatException('最多只能同时存在 $maxSources 个自定义源');
     }
     final parsed = _parseScript(script, fileName: fileName);
     final now = DateTime.now().millisecondsSinceEpoch;
     final info = CustomSourceInfo(
-      id: 'user_api_$now',
+      id: _newId(now),
       name: parsed.name,
       description: parsed.description,
       version: parsed.version,
@@ -78,11 +86,60 @@ class CustomSourceRepository {
       homepage: parsed.homepage,
       importUrl: _cleanUrl(importUrl),
       createdAt: now,
+      group: group,
     );
     await _writeScript(info.id, parsed.script);
     sources.add(info);
     await _saveIndex();
     return info;
+  }
+
+  /// A batch import writes several entries inside the same millisecond, so the
+  /// timestamp id gets a counter only when it would otherwise collide.
+  String _newId(int now) {
+    var id = 'user_api_$now';
+    var suffix = 0;
+    while (byId(id) != null) {
+      id = 'user_api_${now}_${++suffix}';
+    }
+    return id;
+  }
+
+  /// Replace one batch group wholesale: every script of that group is removed
+  /// (file included) and the freshly probed seeds take its place. Hand-imported
+  /// sources never participate.
+  Future<List<CustomSourceInfo>> replaceGroup(
+    String group,
+    List<SourceSeed> seeds,
+  ) async {
+    await clearGroup(group);
+    final added = <CustomSourceInfo>[];
+    for (final seed in seeds) {
+      if (sources.length >= maxSources) break;
+      try {
+        added.add(await importScript(
+          seed.script,
+          fileName: seed.label.isEmpty ? null : seed.label,
+          importUrl: seed.importUrl,
+          group: group,
+        ));
+      } catch (_) {
+        // A seed that stopped parsing since the probe is skipped, not fatal.
+      }
+    }
+    return added;
+  }
+
+  Future<int> clearGroup(String group) async {
+    final ids = sources.where((source) => source.group == group).map((source) => source.id).toList();
+    if (ids.isEmpty) return 0;
+    for (final id in ids) {
+      final file = File(p.join(_dir.path, '$id.js'));
+      if (await file.exists()) await file.delete();
+    }
+    sources.removeWhere((source) => ids.contains(source.id));
+    await _saveIndex();
+    return ids.length;
   }
 
   /// Re-download/refresh an existing source without creating a duplicate.
@@ -105,6 +162,7 @@ class CustomSourceRepository {
       importUrl: _cleanUrl(importUrl) ?? previous.importUrl,
       createdAt: previous.createdAt,
       disabled: previous.disabled,
+      group: previous.group,
     );
     await _writeScript(info.id, parsed.script);
     sources[index] = info;
@@ -168,6 +226,7 @@ class CustomSourceRepository {
           createdAt: (map['createdAt'] as num?)?.toInt() ??
               DateTime.now().millisecondsSinceEpoch,
           disabled: map['disabled'] == true,
+          group: '${map['group'] ?? sourceGroupManual}',
         );
 
         await _writeScript(id, parsed.script);
@@ -175,7 +234,7 @@ class CustomSourceRepository {
         if (index >= 0) {
           sources[index] = info;
         } else {
-          if (sources.length >= 20) continue;
+          if (sources.length >= maxSources) continue;
           sources.add(info);
         }
         restored++;

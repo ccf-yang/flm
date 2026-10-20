@@ -9,6 +9,7 @@ class CustomSourceInfo {
     this.importUrl,
     this.createdAt = 0,
     this.disabled = false,
+    this.group = sourceGroupManual,
   });
 
   final String id;
@@ -25,6 +26,11 @@ class CustomSourceInfo {
   /// pool, so a broken script no longer slows every song down.
   final bool disabled;
 
+  /// Which section of the 自定义源 page owns this entry: a hand-imported script,
+  /// the batch result of the in-app source search, or the batch result imported
+  /// from the lx-hub web list. Only grouped entries are ever replaced wholesale.
+  final String group;
+
   factory CustomSourceInfo.fromJson(Map<String, dynamic> json) {
     final importUrlRaw = json['importUrl'];
     final importUrl = importUrlRaw is String && importUrlRaw.trim().isNotEmpty
@@ -40,6 +46,7 @@ class CustomSourceInfo {
       importUrl: importUrl,
       createdAt: (json['createdAt'] as num?)?.toInt() ?? 0,
       disabled: json['disabled'] == true,
+      group: '${json['group'] ?? sourceGroupManual}',
     );
   }
 
@@ -53,6 +60,7 @@ class CustomSourceInfo {
         if (importUrl != null && importUrl!.isNotEmpty) 'importUrl': importUrl,
         'createdAt': createdAt,
         if (disabled) 'disabled': true,
+        if (group != sourceGroupManual) 'group': group,
       };
 
   CustomSourceInfo copyWith({
@@ -63,6 +71,7 @@ class CustomSourceInfo {
     String? homepage,
     String? importUrl,
     bool? disabled,
+    String? group,
   }) {
     return CustomSourceInfo(
       id: id,
@@ -74,8 +83,45 @@ class CustomSourceInfo {
       importUrl: importUrl ?? this.importUrl,
       createdAt: createdAt,
       disabled: disabled ?? this.disabled,
+      group: group ?? this.group,
     );
   }
+}
+
+/// Script imported by hand (本地/在线 URL) — never touched by a batch operation.
+const String sourceGroupManual = '';
+
+/// Result of the in-app source search (lx-hub 的搜索+沙箱实测方式).
+const String sourceGroupAuto = 'auto';
+
+/// Result of the lx-hub web list (每日实测的可用源).
+const String sourceGroupWeb = 'web';
+
+String sourceGroupName(String group) {
+  switch (group) {
+    case sourceGroupAuto:
+      return '自动导入源';
+    case sourceGroupWeb:
+      return 'web探测导入源';
+    default:
+      return '自定义源';
+  }
+}
+
+/// One script handed to a batch import: text plus the address it came from, so
+/// 刷新 can re-download it later without remembering the hub index.
+class SourceSeed {
+  const SourceSeed({
+    required this.script,
+    this.importUrl,
+    this.label = '',
+    this.platforms = const <String>[],
+  });
+
+  final String script;
+  final String? importUrl;
+  final String label;
+  final List<String> platforms;
 }
 
 class SourceCapabilities {

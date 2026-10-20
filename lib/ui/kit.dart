@@ -557,6 +557,7 @@ class SectionHead extends StatelessWidget {
     this.onAction,
     this.actionLabel,
     this.actionIcon,
+    this.trailing,
   });
 
   final String title;
@@ -564,6 +565,10 @@ class SectionHead extends StatelessWidget {
   final VoidCallback? onAction;
   final String? actionLabel;
   final IconData? actionIcon;
+
+  /// Extra controls on the same row, used where a section has more than the
+  /// single text action (自定义源's 一键获取 / 清空).
+  final List<Widget>? trailing;
 
   @override
   Widget build(BuildContext context) {
@@ -574,6 +579,8 @@ class SectionHead extends StatelessWidget {
           Expanded(
             child: Text(
               title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 fontSize: 16.5,
                 fontWeight: FontWeight.w700,
@@ -617,6 +624,7 @@ class SectionHead extends StatelessWidget {
                 ),
               ),
             ),
+          if (trailing != null) ...trailing!,
         ],
       ),
     );

@@ -13,7 +13,9 @@ import '../models/custom_source.dart';
 import '../models/song.dart';
 import '../services/debug_log.dart';
 import '../services/http_bridge.dart';
+import '../services/online_engine.dart';
 import '../services/source_engine.dart';
+import '../services/source_hub.dart';
 import '../services/url_probe.dart';
 import 'app_state.dart';
 
@@ -39,6 +41,7 @@ class SourceState extends ChangeNotifier {
     required this.http,
     required this.appState,
     this.debugLog,
+    this.onlineEngine,
   });
 
   /// Keep at most this many live sandboxes; the least recently used idle one is
@@ -49,6 +52,10 @@ class SourceState extends ChangeNotifier {
   final HttpBridge http;
   final AppState appState;
   final DebugLog? debugLog;
+
+  /// Used by the batch probe to fetch a real song per platform; a hub candidate
+  /// is only called usable when its link resolves against such a song.
+  final OnlineEngine? onlineEngine;
 
   /// Reason of the most recent failed cross-source resolution, surfaced in the
   /// debug log so "why can't this song play" is answerable from the phone.
@@ -64,6 +71,28 @@ class SourceState extends ChangeNotifier {
 
   bool importing = false;
   String? error;
+
+  /// Batch scan state, shown as a progress line on the 自定义源 page while the
+  /// hub list is being fetched, downloaded and (for 自动导入源) re-probed here.
+  bool hubWorking = false;
+  String hubStatus = '';
+  int hubDone = 0;
+  int hubTotal = 0;
+  bool _hubCancelRequested = false;
+
+  final SourceHub _hub = SourceHub();
+
+  /// A probe needs a real song per platform; the first search result is cached
+  /// so a 20-candidate scan only pays for the search once per platform.
+  final Map<String, Song?> _hubTestSongs = <String, Song?>{};
+
+  /// Ask the running batch scan to stop after its current candidate.
+  void cancelHubScan() {
+    if (!hubWorking) return;
+    _hubCancelRequested = true;
+    hubStatus = '正在停止…';
+    notifyListeners();
+  }
 
   List<CustomSourceInfo> get sources => repository.sources;
 
@@ -138,22 +167,30 @@ class SourceState extends ChangeNotifier {
     return task.whenComplete(() => _initializing.remove(source.id));
   }
 
-  Future<void> _doInitialize(CustomSourceInfo source) async {
-    var slot = _slots[source.id];
-    if (slot == null) {
-      slot = _SourceSlot(SourceEngine(http), debugLog);
-      _slots[source.id] = slot;
-      _evictIfNeeded(source.id);
-      notifyListeners();
-      // Give EngineHost one frame to mount the new off-screen web view before
-      // the page-load future below starts waiting for it. When the app is
-      // backgrounded no frames are produced, so never wait indefinitely.
-      await WidgetsBinding.instance.endOfFrame.timeout(
-        const Duration(milliseconds: 600),
-        onTimeout: () {},
-      );
+  /// Create the sandbox for [id] if needed and let [EngineHost] mount it. The
+  /// page-load future must not start waiting before the web view exists, so a
+  /// freshly created slot gets one frame first; a backgrounded app produces no
+  /// frames, hence the short timeout.
+  Future<_SourceSlot> _mountSlot(String id) async {
+    final existing = _slots[id];
+    if (existing != null) {
+      existing.lastUsed = DateTime.now();
+      return existing;
     }
+    final slot = _SourceSlot(SourceEngine(http), debugLog);
+    _slots[id] = slot;
+    _evictIfNeeded(id);
+    notifyListeners();
+    await WidgetsBinding.instance.endOfFrame.timeout(
+      const Duration(milliseconds: 600),
+      onTimeout: () {},
+    );
     slot.lastUsed = DateTime.now();
+    return slot;
+  }
+
+  Future<void> _doInitialize(CustomSourceInfo source) async {
+    final slot = await _mountSlot(source.id);
 
     final script = await repository.scriptFor(source.id);
     if (script == null || script.trim().isEmpty) {
@@ -236,8 +273,8 @@ class SourceState extends ChangeNotifier {
 
   Future<CustomSourceInfo?> importSourceFromUrl(String rawUrl) async {
     final uri = _parseUrl(rawUrl);
-    if (sources.length >= 20) {
-      throw const FormatException('最多只能同时存在 20 个自定义源');
+    if (sources.length >= CustomSourceRepository.maxSources) {
+      throw const FormatException('最多只能同时存在 ${CustomSourceRepository.maxSources} 个自定义源');
     }
 
     importing = true;
@@ -624,11 +661,366 @@ class SourceState extends ChangeNotifier {
     throw failure;
   }
 
+  /// Fetch the lx-hub list and turn it into the seeds of one batch group.
+  ///
+  /// [selfProbe] is what separates the two entry points. `true`（自动导入源）
+  /// re-checks every published script inside this app with the same path
+  /// playback uses, because the hub's verdict is hours old and its backend can
+  /// already be dead; `false`（web探测导入源） trusts that daily scan and only
+  /// needs the script text. Nothing is written here — the caller shows the
+  /// verdicts and only [applyHubGroup] replaces the group.
+  Future<HubImportOutcome> scanHubSources({
+    required String group,
+    required bool selfProbe,
+    int? maxCandidates,
+  }) async {
+    if (hubWorking) {
+      return HubImportOutcome(
+        group: group,
+        candidates: const <HubCandidateResult>[],
+        seeds: const <SourceSeed>[],
+        poolSize: 0,
+        error: '已有一批源在获取中，请等待它结束',
+      );
+    }
+    hubWorking = true;
+    _hubCancelRequested = false;
+    hubDone = 0;
+    hubTotal = 0;
+    hubStatus = '正在读取 lx-hub 源列表…';
+    notifyListeners();
+
+    final candidates = <HubCandidateResult>[];
+    final seeds = <SourceSeed>[];
+    String? failure;
+    DateTime? generatedAt;
+    var poolSize = 0;
+    var cancelled = false;
+
+    try {
+      final index = await _hub.fetchIndex();
+      generatedAt = index.generatedAt;
+      final published = index.entries
+          .where((entry) => entry.name.trim().isNotEmpty)
+          .toList(growable: false);
+      poolSize = published.length;
+      // The static export only contains scripts the hub could resolve, so for a
+      // trusted import that is the whole pool; for a self-probe the web verdict
+      // is only a hint about which platform to test first.
+      final usableFirst = <HubSourceEntry>[
+        ...published.where((entry) => entry.hasUsablePlatform),
+        ...published.where((entry) => !entry.hasUsablePlatform),
+      ];
+      // A self-probe costs tens of seconds per script, so it is capped harder
+      // than the trusted web import, which only downloads.
+      final cap = maxCandidates ?? (selfProbe ? 15 : 25);
+      final targets = selfProbe
+          ? usableFirst.take(cap).toList(growable: false)
+          : usableFirst
+              .where((entry) => entry.hasUsablePlatform)
+              .take(cap)
+              .toList(growable: false);
+
+      hubTotal = targets.length;
+      hubStatus = selfProbe
+          ? '共 ${targets.length} 个候选，逐个实测取链…'
+          : '共 ${targets.length} 个可用源，正在取回脚本…';
+      notifyListeners();
+
+      for (final entry in targets) {
+        if (_hubCancelRequested) {
+          cancelled = true;
+          break;
+        }
+        hubStatus = '正在检测「${entry.name}」';
+        notifyListeners();
+
+        HubDownload? download;
+        try {
+          download = await _hub.downloadFirst(entry.downloadCandidates);
+        } catch (error) {
+          candidates.add(HubCandidateResult(
+            entry: entry,
+            ok: false,
+            detail: '脚本下载失败：$error',
+          ));
+          hubDone++;
+          notifyListeners();
+          continue;
+        }
+
+        List<String> platforms;
+        String detail;
+        if (selfProbe) {
+          final verdict = await _probeHubCandidate(entry, download.script);
+          platforms = verdict.platforms;
+          detail = verdict.detail;
+        } else {
+          platforms = entry.usablePlatforms;
+          detail = '${entry.platformSummary}（web 实测）';
+        }
+
+        candidates.add(HubCandidateResult(
+          entry: entry,
+          ok: platforms.isNotEmpty,
+          detail: detail,
+          platforms: platforms,
+        ));
+        if (platforms.isNotEmpty) {
+          seeds.add(SourceSeed(
+            script: download.script,
+            importUrl: download.url,
+            label: entry.name,
+            platforms: platforms,
+          ));
+        }
+        hubDone++;
+        notifyListeners();
+      }
+    } catch (error) {
+      failure = '$error';
+    } finally {
+      hubWorking = false;
+      hubStatus = '';
+      hubDone = 0;
+      hubTotal = 0;
+      notifyListeners();
+    }
+
+    debugLog?.record('批量获取源结束', <String, Object?>{
+      '分组': sourceGroupName(group),
+      '候选': poolSize,
+      '通过': seeds.length,
+      '失败': candidates.length - seeds.length,
+      '取消': cancelled,
+      if (failure != null) '错误': failure,
+    });
+
+    return HubImportOutcome(
+      group: group,
+      candidates: candidates,
+      seeds: seeds,
+      poolSize: poolSize,
+      error: failure,
+      cancelled: cancelled,
+      generatedAt: generatedAt,
+    );
+  }
+
+  /// Run one published script through the real playback path: mount a throwaway
+  /// sandbox, activate it, then resolve a song we fetched for each platform the
+  /// script claims. Only a link that serves audio counts.
+  Future<HubCandidateResult> _probeHubCandidate(
+    HubSourceEntry entry,
+    String script,
+  ) async {
+    final temp = CustomSourceInfo(
+      id: 'hub_probe_${entry.id}',
+      name: entry.name,
+      author: entry.author,
+      version: entry.version,
+    );
+    try {
+      final slot = await _mountSlot(temp.id);
+      try {
+        slot.capabilities = await slot.engine.activate(temp, script);
+        slot.ready = true;
+      } catch (error) {
+        return HubCandidateResult(
+          entry: entry,
+          ok: false,
+          detail: '脚本加载失败：$error',
+        );
+      }
+
+      final supported = slot.capabilities.sources.keys
+          .where((name) => slot.capabilities.supports(name, 'musicUrl'))
+          .toList();
+      if (supported.isEmpty) {
+        return HubCandidateResult(
+          entry: entry,
+          ok: false,
+          detail: '脚本没有声明任何可取链平台',
+        );
+      }
+
+      // Try what the hub says works first, then everything else it claims.
+      final preferred = entry.usablePlatforms.where(supported.contains).toList();
+      final order = <String>[
+        ...preferred,
+        ...supported.where((name) => !preferred.contains(name)),
+      ];
+
+      String lastError = '';
+      for (final platform in order.take(2)) {
+        final song = await _testSongFor(platform);
+        if (song == null) {
+          lastError = '无法获取 ${hubPlatformLabel(platform)} 的测试歌曲';
+          continue;
+        }
+        try {
+          // Low quality on purpose: a scan asks "does this script serve real
+          // audio at all", and 128k is the cheapest link to prove it. The whole
+          // attempt is deadline-bound so one hung script cannot stall the batch.
+          await _resolveVia(temp, song, quality: '128k')
+              .timeout(const Duration(seconds: 25));
+          _supported.putIfAbsent(temp.id, () => <String>{}).add(platform);
+          return HubCandidateResult(
+            entry: entry,
+            ok: true,
+            detail: '${hubPlatformLabel(platform)} 实测返回真实音频'
+                '（${song.name} - ${song.singer}）',
+            platforms: <String>[platform],
+          );
+        } on TimeoutException {
+          lastError = '${hubPlatformLabel(platform)} 取链超时（25s）';
+        } catch (error) {
+          lastError = '$error';
+        }
+      }
+      return HubCandidateResult(
+        entry: entry,
+        ok: false,
+        detail: '取链失败：$lastError',
+        platforms: const <String>[],
+      );
+    } finally {
+      _slots.remove(temp.id);
+      _supported.remove(temp.id);
+      notifyListeners();
+    }
+  }
+
+  Future<Song?> _testSongFor(String platform) async {
+    if (_hubTestSongs.containsKey(platform)) return _hubTestSongs[platform];
+    final engine = onlineEngine;
+    Song? found;
+    if (engine != null) {
+      for (final keyword in const <String>['海阔天空', '晴天']) {
+        try {
+          final result = await engine.call('searchMusic', <String, dynamic>{
+            'source': platform,
+            'keyword': keyword,
+            'page': 1,
+            'limit': 5,
+          });
+          final map = result is Map
+              ? Map<String, dynamic>.from(result)
+              : <String, dynamic>{};
+          final list = map['list'];
+          if (list is List) {
+            for (final item in list.whereType<Map>()) {
+              final song = Song.fromOnline(Map<String, dynamic>.from(item));
+              if (song.id.isNotEmpty && !song.isLocal) {
+                found = song;
+                break;
+              }
+            }
+          }
+        } catch (_) {
+          found = null;
+        }
+        if (found != null) break;
+      }
+    }
+    _hubTestSongs[platform] = found;
+    return found;
+  }
+
+  /// Overwrite one batch group with the seeds the user just approved.
+  Future<int> applyHubGroup(String group, List<SourceSeed> seeds) async {
+    if (seeds.isEmpty) return 0;
+    final added = await repository.replaceGroup(group, seeds);
+    // Scripts that the scan replaced no longer exist; drop their sandboxes.
+    _slots.removeWhere((id, _) => repository.byId(id) == null);
+    _supported.removeWhere((id, _) => repository.byId(id) == null);
+    notifyListeners();
+    if (active == null && added.isNotEmpty) {
+      await setActive(added.first);
+    }
+    debugLog?.record('批量导入源完成', <String, Object?>{
+      '分组': sourceGroupName(group),
+      '写入': added.length,
+      '源': added.map((source) => source.name).join('、'),
+    });
+    return added.length;
+  }
+
+  /// 一键清空 of a batch group. Hand-imported sources are never included.
+  Future<int> clearHubGroup(String group) async {
+    final removed = await repository.clearGroup(group);
+    if (removed == 0) return 0;
+    _slots.removeWhere((id, _) => repository.byId(id) == null);
+    _supported.removeWhere((id, _) => repository.byId(id) == null);
+    if (active == null && appState.settings.activeSourceId != null) {
+      await setActive(null);
+    } else {
+      notifyListeners();
+    }
+    debugLog?.record('清空分组 $group', <String, Object?>{'删除': removed});
+    return removed;
+  }
+
   @override
   void dispose() {
     _slots.clear();
     super.dispose();
   }
+}
+
+/// One hub candidate and the verdict the scan reached about it.
+class HubCandidateResult {
+  const HubCandidateResult({
+    required this.entry,
+    required this.ok,
+    required this.detail,
+    this.platforms = const <String>[],
+  });
+
+  final HubSourceEntry entry;
+  final bool ok;
+
+  /// What passed or why it did not — shown verbatim in the review dialog.
+  final String detail;
+
+  /// Platforms whose link resolution served real audio (self-probe only).
+  final List<String> platforms;
+}
+
+/// Result of a batch scan, before the user confirms the overwrite.
+class HubImportOutcome {
+  const HubImportOutcome({
+    required this.group,
+    required this.candidates,
+    required this.seeds,
+    required this.poolSize,
+    this.error,
+    this.cancelled = false,
+    this.generatedAt,
+  });
+
+  final String group;
+  final List<HubCandidateResult> candidates;
+
+  /// Scripts that passed, ready to replace the group.
+  final List<SourceSeed> seeds;
+
+  /// How many published scripts the list had before the candidate cap.
+  final int poolSize;
+
+  final String? error;
+  final bool cancelled;
+
+  /// When the hub last ran its own scan.
+  final DateTime? generatedAt;
+
+  List<HubCandidateResult> get usable =>
+      candidates.where((item) => item.ok).toList(growable: false);
+
+  List<HubCandidateResult> get dead =>
+      candidates.where((item) => !item.ok).toList(growable: false);
+
+  bool get hasUsable => usable.isNotEmpty;
 }
 
 /// Outcome of a batch refresh: how many scripts were replaced, which ones could

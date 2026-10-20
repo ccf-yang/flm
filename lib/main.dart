@@ -58,6 +58,7 @@ Future<void> main() async {
     http: httpBridge,
     appState: appState,
     debugLog: debugLog,
+    onlineEngine: onlineEngine,
   );
   final libraryState = LibraryState(
     repository: libraryRepository,

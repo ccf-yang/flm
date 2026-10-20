@@ -3,11 +3,11 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/theme.dart';
+import '../../data/custom_source_repository.dart';
 import '../../models/custom_source.dart';
 import '../../state/player_state.dart';
 import '../../state/source_state.dart';
 import '../kit.dart';
-import '../widgets/empty_state.dart';
 
 class CustomSourcesScreen extends StatelessWidget {
   const CustomSourcesScreen({super.key});
@@ -19,6 +19,9 @@ class CustomSourcesScreen extends StatelessWidget {
     final onlineCount = state.sources
         .where((source) => (source.importUrl ?? '').trim().isNotEmpty)
         .length;
+    final manual = state.repository.byGroup(sourceGroupManual);
+    final auto = state.repository.byGroup(sourceGroupAuto);
+    final web = state.repository.byGroup(sourceGroupWeb);
     return Scaffold(
       body: Stack(
         children: <Widget>[
@@ -52,54 +55,107 @@ class CustomSourcesScreen extends StatelessWidget {
                   child: ListView(
                     padding: const EdgeInsets.only(bottom: 40),
                     children: <Widget>[
-                      if (state.loading || state.importing)
+                      if (state.hubWorking)
+                        _HubProgress(state: state)
+                      else if (state.loading || state.importing)
                         const Padding(
                           padding: EdgeInsets.symmetric(horizontal: kGutter),
                           child: LinearProgressIndicator(minHeight: 2),
                         ),
                       _StatusCard(state: state),
+
+                      // ── 手动导入：本地文件 / 自己填的在线 URL ──
                       SectionHead(
-                        title: '已导入的源',
-                        note: state.sources.length == state.enabledSources.length
-                            ? '${state.sources.length} 个'
-                            : '${state.sources.length} 个（禁用 ${state.sources.length - state.enabledSources.length}）',
+                        title: '自定义源',
+                        note: _countNote(state, manual),
+                        trailing: <Widget>[
+                          _HeadPill(
+                            label: '导入',
+                            icon: CupertinoIcons.plus,
+                            onTap: () => _showImportMenu(context, state),
+                          ),
+                        ],
                       ),
-                      if (state.sources.isEmpty)
-                        const Padding(
-                          padding: EdgeInsets.symmetric(vertical: 18),
-                          child: EmptyState(
-                            title: '还没有自定义源',
-                            message: '导入 .js 音源脚本后，才能播放在线歌曲',
-                            icon: CupertinoIcons.capsule,
-                          ),
-                        )
-                      else
-                        Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: kGutter),
-                          child: Column(
-                            children: <Widget>[
-                              ...state.sources.map((source) {
-                                final active = source.id == activeId;
-                                return _SourceRow(
-                                  source: source,
-                                  active: active,
-                                  onTap: () => _activate(context, state, source),
-                                  onUpdate: source.importUrl == null
-                                      ? null
-                                      : () => _updateFromUrl(context, state, source),
-                                  onProbe: () => _probe(context, state, source),
-                                  onToggleDisabled: () => _toggleDisabled(context, state, source),
-                                  onDelete: () => _delete(context, state, source),
-                                );
-                              }),
-                              const SizedBox(height: 4),
-                              _NoSourceRow(
-                                active: activeId == null,
-                                onTap: () => state.setActive(null),
-                              ),
-                            ],
-                          ),
+                      ..._rows(context, state, manual, activeId),
+                      if (manual.isEmpty)
+                        const _GroupHint(
+                          '手动导入的脚本永远不被批量操作覆盖：本地 .js 或自己填写的在线直链。',
                         ),
+
+                      // ── 自动导入源：本机实测通过的批量结果 ──
+                      SectionHead(
+                        title: '自动导入源',
+                        note: _countNote(state, auto),
+                        trailing: <Widget>[
+                          _HeadPill(
+                            label: '一键探测',
+                            icon: CupertinoIcons.dot_radiowaves_left_right,
+                            busy: state.hubWorking,
+                            onTap: () => _runHub(
+                              context,
+                              state,
+                              group: sourceGroupAuto,
+                              selfProbe: true,
+                            ),
+                          ),
+                          if (auto.isNotEmpty)
+                            _HeadPill(
+                              label: '清空',
+                              icon: CupertinoIcons.trash,
+                              danger: true,
+                              onTap: () =>
+                                  _clearGroup(context, state, sourceGroupAuto),
+                            ),
+                        ],
+                      ),
+                      ..._rows(context, state, auto, activeId),
+                      if (auto.isEmpty)
+                        const _GroupHint(
+                          '一键探测会抓取 lx-hub 收录的脚本，在本机逐个实测取链，'
+                          '只把能返回真实音频的写进这里，并覆盖本分组。',
+                        ),
+
+                      // ── web探测导入源：直接采用 web 每日实测结果 ──
+                      SectionHead(
+                        title: 'web探测导入源',
+                        note: _countNote(state, web),
+                        trailing: <Widget>[
+                          _HeadPill(
+                            label: 'web 获取',
+                            icon: CupertinoIcons.down_arrow,
+                            busy: state.hubWorking,
+                            onTap: () => _runHub(
+                              context,
+                              state,
+                              group: sourceGroupWeb,
+                              selfProbe: false,
+                            ),
+                          ),
+                          if (web.isNotEmpty)
+                            _HeadPill(
+                              label: '清空',
+                              icon: CupertinoIcons.trash,
+                              danger: true,
+                              onTap: () =>
+                                  _clearGroup(context, state, sourceGroupWeb),
+                            ),
+                        ],
+                      ),
+                      ..._rows(context, state, web, activeId),
+                      if (web.isEmpty)
+                        const _GroupHint(
+                          '从 zlyon.github.io/lx-hub 的每日实测清单批量导入 web 判定可用的源，'
+                          '获取后覆盖本分组。',
+                        ),
+
+                      const SizedBox(height: 10),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: kGutter),
+                        child: _NoSourceRow(
+                          active: activeId == null,
+                          onTap: () => state.setActive(null),
+                        ),
+                      ),
                       Padding(
                         padding: const EdgeInsets.fromLTRB(kGutter, 18, kGutter, 0),
                         child: AuroraButton(
@@ -113,7 +169,8 @@ class CustomSourcesScreen extends StatelessWidget {
                         padding: const EdgeInsets.fromLTRB(kGutter, 16, kGutter, 0),
                         child: Text(
                           '说明：脚本只在本地 WebView 沙箱中运行，用于把歌曲信息转换为音频链接。'
-                          'flm 不内置任何音源，也不对脚本内容负责。',
+                          'flm 不内置任何音源，也不对脚本内容负责。批量分组（自动导入源 / '
+                          'web探测导入源）每次获取都会整组替换，手动导入的自定义源不受影响。',
                           style: TextStyle(
                             fontSize: 11.5,
                             height: 1.6,
@@ -130,6 +187,207 @@ class CustomSourcesScreen extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  /// `3 个` / `3 个（禁用 1）` / `空`
+  String _countNote(SourceState state, List<CustomSourceInfo> group) {
+    if (group.isEmpty) return '空';
+    final disabled = group.where((source) => source.disabled).length;
+    return disabled == 0
+        ? '${group.length} 个'
+        : '${group.length} 个（禁用 $disabled）';
+  }
+
+  List<Widget> _rows(
+    BuildContext context,
+    SourceState state,
+    List<CustomSourceInfo> group,
+    String? activeId,
+  ) {
+    return group.map((source) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: kGutter),
+        child: _SourceRow(
+          source: source,
+          active: source.id == activeId,
+          onTap: () => _activate(context, state, source),
+          onUpdate: source.importUrl == null
+              ? null
+              : () => _updateFromUrl(context, state, source),
+          onProbe: () => _probe(context, state, source),
+          onToggleDisabled: () => _toggleDisabled(context, state, source),
+          onDelete: () => _delete(context, state, source),
+        ),
+      );
+    }).toList(growable: false);
+  }
+
+  /// One-tap batch fetch for a group. [selfProbe] marks the difference between
+  /// the two entry points: 自动导入源 re-tests every candidate inside this app,
+  /// web探测导入源 takes the hub's own daily verdict at face value.
+  Future<void> _runHub(
+    BuildContext context,
+    SourceState state, {
+    required String group,
+    required bool selfProbe,
+  }) async {
+    if (state.hubWorking) {
+      flmToast(context, '正在获取源，请稍候');
+      return;
+    }
+    if (state.sources.length >= CustomSourceRepository.maxSources &&
+        state.repository.byGroup(group).isEmpty) {
+      flmToast(context, '自定义源已达 ${CustomSourceRepository.maxSources} 个上限，先删一些');
+      return;
+    }
+
+    final outcome = await state.scanHubSources(group: group, selfProbe: selfProbe);
+    if (!context.mounted) return;
+    if (outcome.error != null && outcome.candidates.isEmpty) {
+      flmToast(context, '获取失败：${outcome.error}');
+      return;
+    }
+    if (!outcome.hasUsable) {
+      final first = outcome.dead.isEmpty ? '' : '\n${outcome.dead.first.detail}';
+      await flmConfirmDialog(
+        context,
+        title: '没有可用的源',
+        message: outcome.candidates.isEmpty
+            ? (outcome.error ?? '列表里没有可导入的脚本')
+            : '共获取 ${outcome.candidates.length} 个脚本，'
+                '${selfProbe ? '本机实测全部取链失败' : 'web 侧没有可用平台判定'}。$first',
+        cancelLabel: '关闭',
+        confirmLabel: '知道了',
+      );
+      return;
+    }
+    await _reviewHubImport(context, state, outcome);
+  }
+
+  /// Show what passed, then only overwrite the group if the user agrees.
+  Future<void> _reviewHubImport(
+    BuildContext context,
+    SourceState state,
+    HubImportOutcome outcome,
+  ) async {
+    final existing = state.repository.byGroup(outcome.group).length;
+    final groupName = sourceGroupName(outcome.group);
+    final approved = await showFlmSheet<bool>(
+      context,
+      title: '可用源 · $groupName',
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Flexible(
+            child: ListView(
+              shrinkWrap: true,
+              padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
+              children: <Widget>[
+                Text(
+                  '${_stamp(outcome.generatedAt)}｜列表 ${outcome.poolSize} 个，'
+                  '本次检测 ${outcome.candidates.length} 个，可用 ${outcome.usable.length} 个'
+                  '${outcome.cancelled ? '（已手动停止）' : ''}。\n'
+                  '确认后会${existing > 0 ? '用这 ${outcome.seeds.length} 个源覆盖当前 $existing 个' : '写入这 ${outcome.seeds.length} 个源'}，'
+                  '手动导入的自定义源不受影响。',
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    height: 1.6,
+                    color: mutedFor(context),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                ...outcome.usable.map(
+                  (item) => _VerdictRow(
+                    name: item.entry.name,
+                    detail: item.detail,
+                    ok: true,
+                    extra: item.entry.author.isEmpty ? null : item.entry.author,
+                  ),
+                ),
+                if (outcome.dead.isNotEmpty) ...<Widget>[
+                  const SizedBox(height: 8),
+                  Text(
+                    '未通过 ${outcome.dead.length} 个',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      color: faintFor(context),
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  ...outcome.dead.take(12).map(
+                        (item) => _VerdictRow(
+                          name: item.entry.name,
+                          detail: item.detail,
+                          ok: false,
+                        ),
+                      ),
+                ],
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 10, 20, 4),
+            child: AuroraButton(
+              label: existing > 0
+                  ? '覆盖导入 ${outcome.seeds.length} 个源'
+                  : '导入 ${outcome.seeds.length} 个源',
+              icon: CupertinoIcons.square_arrow_down,
+              expand: true,
+              onTap: () => Navigator.pop(context, true),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+            child: AuroraButton(
+              label: '取消',
+              secondary: true,
+              expand: true,
+              onTap: () => Navigator.pop(context, false),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (approved != true) return;
+    if (!context.mounted) return;
+
+    final count = await state.applyHubGroup(outcome.group, outcome.seeds);
+    if (!context.mounted) return;
+    flmToast(
+      context,
+      count == 0
+          ? '写入失败：脚本没有通过校验'
+          : '已写入 $count 个源到「$groupName」',
+    );
+  }
+
+  Future<void> _clearGroup(
+    BuildContext context,
+    SourceState state,
+    String group,
+  ) async {
+    final count = state.repository.byGroup(group).length;
+    final confirmed = await flmConfirmDialog(
+      context,
+      title: '清空${sourceGroupName(group)}',
+      message: '删除这 $count 个源及其脚本？手动导入的自定义源不受影响。',
+      confirmLabel: '清空',
+      danger: true,
+    );
+    if (!confirmed) return;
+    if (!context.mounted) return;
+    final removed = await state.clearHubGroup(group);
+    if (!context.mounted) return;
+    flmToast(context, '已清空 $removed 个源');
+  }
+
+  String _stamp(DateTime? time) {
+    if (time == null) return '列表时间未知';
+    final local = time.toLocal();
+    String two(int value) => value.toString().padLeft(2, '0');
+    return '${local.year}-${two(local.month)}-${two(local.day)} '
+        '${two(local.hour)}:${two(local.minute)}';
   }
 
   Future<void> _showImportMenu(BuildContext context, SourceState state) async {
@@ -621,6 +879,190 @@ class _StatusCard extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Banner shown while a batch fetch runs: which candidate is being handled, how
+/// far the scan got, and a stop button (each candidate can take some seconds).
+class _HubProgress extends StatelessWidget {
+  const _HubProgress({required this.state});
+
+  final SourceState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = state.hubTotal > 0
+        ? '${state.hubStatus}（${state.hubDone}/${state.hubTotal}）'
+        : state.hubStatus;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(kGutter, 10, kGutter, 2),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(12, 10, 6, 10),
+        decoration: BoxDecoration(
+          color: surfaceFor(context),
+          borderRadius: BorderRadius.circular(15),
+          border: Border.all(color: lineColor(context)),
+        ),
+        child: Row(
+          children: <Widget>[
+            const SizedBox(
+              width: 15,
+              height: 15,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            const SizedBox(width: 11),
+            Expanded(
+              child: Text(
+                text.isEmpty ? '正在获取源…' : text,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 11.5, height: 1.4, color: mutedFor(context)),
+              ),
+            ),
+            _HeadPill(
+              label: '停止',
+              icon: CupertinoIcons.stop_fill,
+              danger: true,
+              onTap: state.cancelHubScan,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Small pill on a group header row (一键探测 / 清空 / 导入).
+class _HeadPill extends StatelessWidget {
+  const _HeadPill({
+    required this.label,
+    this.icon,
+    required this.onTap,
+    this.danger = false,
+    this.busy = false,
+  });
+
+  final String label;
+  final IconData? icon;
+  final VoidCallback onTap;
+  final bool danger;
+
+  /// Another batch is running, so this entry point is temporarily inert.
+  final bool busy;
+
+  @override
+  Widget build(BuildContext context) {
+    final enabled = !busy;
+    final color = !enabled
+        ? faintFor(context)
+        : (danger ? coralFor(context) : accentFor(context));
+    return Padding(
+      padding: const EdgeInsets.only(left: 6),
+      child: Pressable(
+        onTap: enabled ? onTap : null,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(999),
+            border: Border.all(
+              color: enabled ? color.withValues(alpha: 0.35) : lineColor(context),
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              if (icon != null) ...<Widget>[
+                Icon(icon, size: 11.5, color: color),
+                const SizedBox(width: 3),
+              ],
+              Text(
+                label,
+                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: color),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// One-line explanation shown under an empty group, instead of a big empty card.
+class _GroupHint extends StatelessWidget {
+  const _GroupHint(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(kGutter, 2, kGutter, 4),
+      child: Text(
+        text,
+        style: TextStyle(fontSize: 11, height: 1.55, color: faintFor(context)),
+      ),
+    );
+  }
+}
+
+/// One script inside the post-scan review sheet.
+class _VerdictRow extends StatelessWidget {
+  const _VerdictRow({
+    required this.name,
+    required this.detail,
+    required this.ok,
+    this.extra,
+  });
+
+  final String name;
+  final String detail;
+  final bool ok;
+  final String? extra;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = ok ? accentFor(context) : faintFor(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Padding(
+            padding: const EdgeInsets.only(top: 2),
+            child: Icon(
+              ok ? CupertinoIcons.checkmark_circle_fill : CupertinoIcons.circle,
+              size: 14,
+              color: color,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(
+                  extra == null || extra!.isEmpty ? name : '$name · $extra',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: ok ? textFor(context) : mutedFor(context),
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  detail,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 10.5, height: 1.45, color: faintFor(context)),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
