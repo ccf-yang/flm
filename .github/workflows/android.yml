@@ -31,11 +31,23 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      # android/ is not committed; tool/bootstrap_android.sh generates it. That
-      # script only needs the SDK, so make sure the command line tools and the
-      # platform/build-tools Gradle will ask for are present and licensed.
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      # android/ is not committed; tool/bootstrap_android.sh generates it, and
+      # Gradle only needs an SDK. The runner image already ships one with the
+      # licenses accepted, and the Android plugin downloads whatever
+      # platform/build-tools the Flutter template asks for, so this step just
+      # pre-accepts licenses and pre-fetches the usual packages. It can never
+      # fail the build: if the image layout differs, Gradle does the work.
+      - name: Prepare Android SDK
+        run: |
+          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          MGR=$(find "$SDK/cmdline-tools" -maxdepth 3 -type f -name sdkmanager 2>/dev/null | head -1)
+          if [ -n "$MGR" ]; then
+            yes | "$MGR" --licenses >/dev/null 2>&1
+            "$MGR" "platform-tools" "platforms;android-36" "build-tools;36.0.0" >/dev/null 2>&1
+          fi
+          echo "ANDROID_HOME=$SDK"
+          echo "sdkmanager=${MGR:-not found, relying on Gradle auto-download}"
+          exit 0
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
