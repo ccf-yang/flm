@@ -15,6 +15,10 @@ dependencies:
   audio_service: ^0.18.15
   audio_session: ^0.1.21
   webview_flutter: ^4.10.0
+  # In-process JS runtime for the custom-source sandbox. iOS uses the system
+  # JavaScriptCore, so audio-source link resolution keeps running while the
+  # app is backgrounded (a WKWebView's JS is frozen behind the lock screen).
+  flutter_js: ^0.8.0
   dio: ^5.7.0
   path_provider: ^2.1.4
   path: ^1.9.0

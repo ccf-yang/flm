@@ -62,6 +62,22 @@ class FlmAudioHandler extends BaseAudioHandler {
     final callback = _service.onSkipPrevious;
     if (callback != null) await callback();
   }
+
+  @override
+  Future<void> fastForward() async {
+    // Many car head units map their steering-wheel "next" button to the
+    // fast-forward/seek-forward AVRCP command rather than to skipToNext. The
+    // app never exposes a fast-forward control (only previous/play/next), so
+    // treating seek-forward as "next track" is what the driver expects.
+    final callback = _service.onSkipNext;
+    if (callback != null) await callback();
+  }
+
+  @override
+  Future<void> rewind() async {
+    final callback = _service.onSkipPrevious;
+    if (callback != null) await callback();
+  }
 }
 
 /// Owns two [AudioPlayer] instances: the *active* one produces sound and the

@@ -13,6 +13,8 @@ import '../models/custom_source.dart';
 import '../models/song.dart';
 import '../services/debug_log.dart';
 import '../services/http_bridge.dart';
+import '../services/js_source_engine.dart';
+import '../services/music_source_engine.dart';
 import '../services/online_engine.dart';
 import '../services/source_engine.dart';
 import '../services/source_hub.dart';
@@ -24,15 +26,21 @@ import 'app_state.dart';
 /// mounted off-screen inside [SourceState]'s slot map.
 class _SourceSlot {
   _SourceSlot(this.engine, DebugLog? log) {
+    bindLog(log);
+  }
+
+  /// Starts as the in-process engine; [SourceState] replaces it with a
+  /// [SourceEngine] when the JS runtime cannot run the script.
+  MusicSourceEngine engine;
+  SourceCapabilities capabilities = SourceCapabilities.empty();
+  bool ready = false;
+  DateTime lastUsed = DateTime.now();
+
+  void bindLog(DebugLog? log) {
     if (log != null) {
       engine.onEvent = (title, fields) => log.record(title, fields);
     }
   }
-
-  final SourceEngine engine;
-  SourceCapabilities capabilities = SourceCapabilities.empty();
-  bool ready = false;
-  DateTime lastUsed = DateTime.now();
 }
 
 class SourceState extends ChangeNotifier {
@@ -117,6 +125,16 @@ class SourceState extends ChangeNotifier {
 
   bool get hasActiveSource => active != null && !capabilities.isEmpty;
 
+  /// True when the selected source's script runs in-process, so links can still
+  /// be resolved while iOS has frozen every WKWebView behind the lock screen.
+  bool get canResolveInBackground {
+    final source = active;
+    if (source == null) return false;
+    final slot = _slots[source.id];
+    if (slot == null) return true;
+    return slot.engine is JsSourceEngine;
+  }
+
   /// Why the previous cross-source resolution failed (null after a success).
   String? get lastPoolError => _lastPoolError;
 
@@ -124,8 +142,10 @@ class SourceState extends ChangeNotifier {
 
   /// Controllers of every live sandbox. [EngineHost] must keep these mounted
   /// off-screen, otherwise their WKWebViews never run.
-  List<WebViewController> get engineControllers =>
-      _slots.values.map((slot) => slot.engine.controller).toList(growable: false);
+  List<WebViewController> get engineControllers => _slots.values
+      .map((slot) => slot.engine.controller)
+      .whereType<WebViewController>()
+      .toList(growable: false);
 
   Future<void> init() async {
     final source = active;
@@ -177,14 +197,21 @@ class SourceState extends ChangeNotifier {
       existing.lastUsed = DateTime.now();
       return existing;
     }
-    final slot = _SourceSlot(SourceEngine(http), debugLog);
+    // Prefer the in-process engine: it keeps resolving URLs while iOS has
+    // frozen the WKWebView content process behind the lock screen. It starts
+    // lazily, so a failure is detected (and recovered from) in _activateSlot.
+    final slot = _SourceSlot(JsSourceEngine(http), debugLog);
     _slots[id] = slot;
     _evictIfNeeded(id);
     notifyListeners();
-    await WidgetsBinding.instance.endOfFrame.timeout(
-      const Duration(milliseconds: 600),
-      onTimeout: () {},
-    );
+    // A WebView only starts loading once EngineHost has mounted it; the JS
+    // engine needs no frame at all.
+    if (slot.engine.controller != null) {
+      await WidgetsBinding.instance.endOfFrame.timeout(
+        const Duration(milliseconds: 600),
+        onTimeout: () {},
+      );
+    }
     slot.lastUsed = DateTime.now();
     return slot;
   }
@@ -207,7 +234,7 @@ class SourceState extends ChangeNotifier {
       '脚本长度': script.length,
     });
     try {
-      slot.capabilities = await slot.engine.activate(source, script);
+      slot.capabilities = await _activateSlot(slot, source, script);
       final names = <String>{};
       for (final name in slot.capabilities.sources.keys) {
         if (slot.capabilities.supports(name, 'musicUrl')) names.add(name);
@@ -217,6 +244,7 @@ class SourceState extends ChangeNotifier {
       if (active?.id == source.id) error = null;
       debugLog?.record('源就绪 ${source.name}', <String, Object?>{
         '平台': names.join('、'),
+        '引擎': slot.engine is JsSourceEngine ? 'JS（锁屏可用）' : 'WebView',
       });
     } catch (e) {
       slot.ready = false;
@@ -229,6 +257,57 @@ class SourceState extends ChangeNotifier {
     }
     slot.lastUsed = DateTime.now();
     notifyListeners();
+  }
+
+  /// Activate a source, transparently falling back to the WKWebView sandbox if
+  /// the in-process JS runtime cannot start. The fallback is a one-way switch
+  /// for this slot: a script the in-process runtime rejects is retried once in
+  /// the same browser engine the app used before.
+  Future<SourceCapabilities> _activateSlot(
+    _SourceSlot slot,
+    CustomSourceInfo source,
+    String script,
+  ) async {
+    try {
+      return await slot.engine.activate(source, script);
+    } on JsEngineUnavailable catch (error) {
+      if (slot.engine is! JsSourceEngine) rethrow;
+      debugLog?.record('JS 后台引擎不可用，回退 WebView', <String, Object?>{
+        '源': source.name,
+        '原因': error.message,
+      });
+      await (slot.engine as JsSourceEngine).dispose();
+      slot.engine = SourceEngine(http);
+      slot.bindLog(debugLog);
+      slot.ready = false;
+      slot.capabilities = SourceCapabilities.empty();
+      notifyListeners();
+      // EngineHost must mount the new WebView before loadFlutterAsset runs.
+      await WidgetsBinding.instance.endOfFrame.timeout(
+        const Duration(milliseconds: 600),
+        onTimeout: () {},
+      );
+      return slot.engine.activate(source, script);
+    }
+  }
+
+  void _dropSlot(String id) {
+    final slot = _slots.remove(id);
+    final engine = slot?.engine;
+    if (engine is JsSourceEngine) {
+      unawaited(engine.dispose());
+    }
+  }
+
+  void _dropMissingSlots() {
+    final stale = _slots.keys
+        .where((id) => repository.byId(id) == null)
+        .toList(growable: false);
+    for (final id in stale) {
+      _dropSlot(id);
+      _supported.remove(id);
+    }
+    _supported.removeWhere((id, _) => repository.byId(id) == null);
   }
 
   void _evictIfNeeded(String keepId) {
@@ -244,7 +323,7 @@ class SourceState extends ChangeNotifier {
         }
       }
       if (victimId == null) return;
-      _slots.remove(victimId);
+      _dropSlot(victimId);
       _supported.remove(victimId);
     }
   }
@@ -315,7 +394,7 @@ class SourceState extends ChangeNotifier {
       );
       notifyListeners();
       // The script changed, so its cached sandbox must run the new code once.
-      _slots.remove(updated.id);
+      _dropSlot(updated.id);
       if (active?.id == updated.id || _initializing.isEmpty) {
         await _initialize(updated);
       }
@@ -392,7 +471,7 @@ class SourceState extends ChangeNotifier {
         try {
           final script = await _downloadScript(_parseUrl(rawUrl));
           await repository.updateScript(source.id, script, importUrl: rawUrl);
-          _slots.remove(source.id);
+          _dropSlot(source.id);
           _supported.remove(source.id);
           updated++;
           debugLog?.record('全局刷新成功 ${source.name}', <String, Object?>{
@@ -478,7 +557,7 @@ class SourceState extends ChangeNotifier {
   Future<void> deleteSource(String id) async {
     await repository.delete(id);
     _supported.remove(id);
-    _slots.remove(id);
+    _dropSlot(id);
     if (appState.settings.activeSourceId == id) {
       await setActive(null);
     } else {
@@ -596,6 +675,7 @@ class SourceState extends ChangeNotifier {
   Future<Map<String, dynamic>> resolveMusicUrlAutoSwitch(
     Song song, {
     String? quality,
+    bool background = false,
   }) async {
     if (song.isLocal) {
       return <String, dynamic>{'url': song.localPath, 'type': 'local'};
@@ -633,7 +713,15 @@ class SourceState extends ChangeNotifier {
 
     Object? lastError;
     for (final candidate in candidates) {
-      final slot = _slots[candidate.id];
+      final existing = _slots[candidate.id];
+      // Behind the lock screen a WebView sandbox cannot answer: its JavaScript
+      // is frozen. Skipping those candidates immediately beats waiting for a
+      // 30 s timeout for every source. A source with no live slot yet is still
+      // worth initializing — new slots use the in-process engine.
+      if (background && existing != null && existing.engine is! JsSourceEngine) {
+        continue;
+      }
+      final slot = existing;
       if (slot == null || !slot.ready) {
         await _initialize(candidate);
       }
@@ -823,7 +911,7 @@ class SourceState extends ChangeNotifier {
     try {
       final slot = await _mountSlot(temp.id);
       try {
-        slot.capabilities = await slot.engine.activate(temp, script);
+        slot.capabilities = await _activateSlot(slot, temp, script);
         slot.ready = true;
       } catch (error) {
         return HubCandidateResult(
@@ -885,7 +973,7 @@ class SourceState extends ChangeNotifier {
         platforms: const <String>[],
       );
     } finally {
-      _slots.remove(temp.id);
+      _dropSlot(temp.id);
       _supported.remove(temp.id);
       notifyListeners();
     }
@@ -932,8 +1020,7 @@ class SourceState extends ChangeNotifier {
     if (seeds.isEmpty) return 0;
     final added = await repository.replaceGroup(group, seeds);
     // Scripts that the scan replaced no longer exist; drop their sandboxes.
-    _slots.removeWhere((id, _) => repository.byId(id) == null);
-    _supported.removeWhere((id, _) => repository.byId(id) == null);
+    _dropMissingSlots();
     notifyListeners();
     if (active == null && added.isNotEmpty) {
       await setActive(added.first);
@@ -950,8 +1037,7 @@ class SourceState extends ChangeNotifier {
   Future<int> clearHubGroup(String group) async {
     final removed = await repository.clearGroup(group);
     if (removed == 0) return 0;
-    _slots.removeWhere((id, _) => repository.byId(id) == null);
-    _supported.removeWhere((id, _) => repository.byId(id) == null);
+    _dropMissingSlots();
     if (active == null && appState.settings.activeSourceId != null) {
       await setActive(null);
     } else {
@@ -963,6 +1049,10 @@ class SourceState extends ChangeNotifier {
 
   @override
   void dispose() {
+    for (final slot in _slots.values) {
+      final engine = slot.engine;
+      if (engine is JsSourceEngine) unawaited(engine.dispose());
+    }
     _slots.clear();
     super.dispose();
   }

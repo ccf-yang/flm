@@ -7,8 +7,9 @@ import 'package:webview_flutter/webview_flutter.dart';
 import '../models/custom_source.dart';
 import '../models/song.dart';
 import 'http_bridge.dart';
+import 'music_source_engine.dart';
 
-class SourceEngine {
+class SourceEngine implements MusicSourceEngine {
   SourceEngine(this._http) {
     _controller
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
@@ -59,10 +60,14 @@ class SourceEngine {
 
   /// Optional mirror of engine-level events (timeouts, recovery) for the
   /// in-app debug page.
+  @override
   void Function(String title, Map<String, Object?> fields)? onEvent;
 
+  @override
   WebViewController get controller => _controller;
+  @override
   CustomSourceInfo? get current => _current;
+  @override
   SourceCapabilities get capabilities => _capabilities;
   bool get hasSource => _current != null && !_capabilities.isEmpty;
 
@@ -74,6 +79,7 @@ class SourceEngine {
     _loaded = true;
   }
 
+  @override
   Future<SourceCapabilities> activate(CustomSourceInfo info, String script) async {
     // The sandbox's `lx_setup` deletes itself after running (see
     // assets/js/user_source.html), so a source can only ever be prepared on a
@@ -134,6 +140,7 @@ class SourceEngine {
     );
   }
 
+  @override
   void clear() {
     _current = null;
     _capabilities = SourceCapabilities.empty();
@@ -143,6 +150,7 @@ class SourceEngine {
 
   List<String> qualitysFor(String source) => _capabilities.qualitysFor(source);
 
+  @override
   Future<Map<String, dynamic>> requestMusicUrl({
     required String source,
     required String quality,
@@ -158,6 +166,7 @@ class SourceEngine {
     );
   }
 
+  @override
   Future<Map<String, dynamic>> requestLyric({
     required String source,
     required Song song,
@@ -171,6 +180,7 @@ class SourceEngine {
     );
   }
 
+  @override
   Future<Map<String, dynamic>> requestPic({
     required String source,
     required Song song,

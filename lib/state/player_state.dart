@@ -66,10 +66,10 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
         _notify();
       }),
     );
-    service.onSkipNext = () => next();
-    service.onSkipPrevious = () => previous();
+    service.onSkipNext = _handleRemoteSkipNext;
+    service.onSkipPrevious = _handleRemoteSkipPrevious;
     service.onPlayRequest = play;
-    service.onPauseRequest = pause;
+    service.onPauseRequest = _handleRemotePause;
     service.onSeekRequest = seek;
     service.onStopRequest = _handleSystemStop;
     service.onCompleted = _handleCompleted;
@@ -85,6 +85,15 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       unawaited(_handlePlayerError(message));
     };
     service.onExternalPause = () {
+      // Bluetooth head units often put a pause immediately before or after the
+      // next/previous command. Honouring that pause stops the track that was
+      // just started and is exactly the "it says it changed but there is no
+      // sound" failure in a car. Treat a pause glued to a skip as part of the
+      // skip and ignore it.
+      final recentSkip =
+          DateTime.now().difference(_lastRemoteSkipAt) < _remotePauseGuard;
+      _ignoreRemotePause = recentSkip;
+      if (recentSkip) return;
       // A pause from the lock screen / control centre is deliberate: never
       // auto-restart it when the app comes back, not even if an audio
       // interruption was still flagged as resumable.
@@ -203,6 +212,11 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   /// promotion must not let a stale retry hand that finished track back to the
   /// player afterwards.
   bool _loadingIsSelection = false;
+
+  /// Last time a Bluetooth/car/remote skip command arrived, and whether the
+  /// pause that some head units send alongside it should be swallowed.
+  DateTime _lastRemoteSkipAt = DateTime.fromMillisecondsSinceEpoch(0);
+  bool _ignoreRemotePause = false;
   Timer? _settingsSaveTimer;
   bool _resumeOnForeground = false;
   int _autoSkips = 0;
@@ -223,12 +237,19 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   /// A resolve started while backgrounded is waiting on frozen JavaScript, so cap
   /// how long an advance blocks on it. Returning to the foreground restarts the
   /// load once JavaScript runs again.
-  static const Duration _backgroundResolveTimeout = Duration(seconds: 12);
+  // The in-process source engine can resolve while backgrounded; 12 s used to
+  // be the safe ceiling for a frozen WebView, but a real cross-source lookup
+  // (script -> native HTTP -> probe) can legitimately take longer.
+  static const Duration _backgroundResolveTimeout = Duration(seconds: 25);
 
   /// How long a start may wait for the *following* link to be resolved. The
   /// standby has to be armed before the screen can lock, but a slow source must
   /// not hold the song the user just tapped hostage.
   static const Duration _warmBudget = Duration(seconds: 2);
+
+  /// A remote pause arriving this soon after a remote skip is treated as part
+  /// of the same head-unit button press, not as a deliberate pause.
+  static const Duration _remotePauseGuard = Duration(milliseconds: 1200);
 
   /// How long a resolved link is trusted for, how close to that deadline it gets
   /// re-fetched while the app is awake, and how many links are kept.
@@ -397,6 +418,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     // track whose link is already cached, which keeps background playback running.
     if (_loading && !_handedOff && started != null) {
       if (!_appInForeground &&
+          !sourceState.canResolveInBackground &&
           now.difference(started) > const Duration(seconds: 20)) {
         _silentHeals = 0;
         debugLog?.record('后台取链停滞，放弃本次加载 ${_current?.name}', <String, Object?>{
@@ -844,13 +866,15 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// The track a failure or an automatic advance should move to, or null when
-  /// nothing can be played right now. Behind the lock screen only a song whose
-  /// link is already in hand counts as playable, since the source sandbox cannot
-  /// resolve anything while its JavaScript is frozen.
+  /// nothing can be played right now. Behind the lock screen this only depends
+  /// on cached links when the source script had to fall back to a WKWebView;
+  /// the in-process engine can resolve like it does in the foreground.
   int? _nextPlayableIndex() {
     final indices = _upcoming(count: 3);
     if (indices.isEmpty) return null;
-    if (_appInForeground) return indices.first;
+    if (_appInForeground || sourceState.canResolveInBackground) {
+      return indices.first;
+    }
     for (final item in indices) {
       final song = _queue[item];
       if (song.isLocal || _hasUsableCache(song)) return item;
@@ -926,18 +950,24 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     final now = DateTime.now();
     final cached = _urlCache[key];
     if (cached != null && cached.expiresAt.isAfter(now)) {
-      // Backgrounded, the sandbox is frozen, so even a nearly-expired link beats
-      // a resolve that can never finish. In the foreground, refresh proactively.
-      if (!_appInForeground || !_isGoingStale(cached, now)) return cached.url;
+      // With a frozen WebView even a nearly-expired link beats a resolve that
+      // can never finish. The in-process engine has no such limit, so it can
+      // refresh proactively in the background as well.
+      final cannotResolve =
+          !_appInForeground && !sourceState.canResolveInBackground;
+      if (cannotResolve || !_isGoingStale(cached, now)) return cached.url;
     }
-    final pending = sourceState.resolveMusicUrlAutoSwitch(song);
+    final pending = sourceState.resolveMusicUrlAutoSwitch(
+      song,
+      background: !_appInForeground,
+    );
     try {
       final resolved = _appInForeground
           ? await pending
           : await pending.timeout(
               _backgroundResolveTimeout,
               onTimeout: () => throw StateError(
-                '后台取链超时（音源脚本在锁屏时被系统冻结），回前台后会自动重试',
+                '后台取链超时，回前台后会自动重试',
               ),
             );
       final url = '${resolved['url'] ?? ''}';
@@ -972,9 +1002,10 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   /// the standby player. This runs while the current track is being loaded, so
   /// the link is in hand even if the screen locks the instant playback starts.
   ///
-  /// In the background the sandbox is frozen: only an already cached link can
-  /// be used, but computing the plan and arming the standby from that cache is
-  /// exactly what keeps consecutive lock-screen skips playing.
+  /// With the in-process source engine this also works behind the lock screen;
+  /// for a script that had to fall back to the WKWebView only an already cached
+  /// link can be used, but computing the plan and arming the standby from that
+  /// cache is exactly what keeps consecutive lock-screen skips playing.
   Future<void> _warmNextLink() async {
     if (_disposed || _queue.isEmpty || _index < 0) return;
 
@@ -1032,11 +1063,14 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
 
-    if (!_appInForeground || !sourceState.hasActiveSource) return;
+    if (!sourceState.hasActiveSource) return;
     if (!_preloading.add(key)) return;
     final epoch = _preloadEpoch;
     try {
-      final resolved = await sourceState.resolveMusicUrlAutoSwitch(song);
+      final resolved = await sourceState.resolveMusicUrlAutoSwitch(
+        song,
+        background: !_appInForeground,
+      );
       if (_disposed || epoch != _preloadEpoch) return;
       final url = '${resolved['url'] ?? ''}';
       if (url.isEmpty) return;
@@ -1077,7 +1111,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   /// source sandbox is still running. These are what the lock-screen
   /// next-button chain uses once JavaScript is frozen.
   Future<void> _prefetchLookahead() async {
-    if (_disposed || !_appInForeground || _current == null) return;
+    if (_disposed || _current == null) return;
     if (!sourceState.hasActiveSource) return;
     final now = DateTime.now();
     if (now.difference(_lastLookaheadAttempt) < const Duration(seconds: 45)) {
@@ -1085,7 +1119,10 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     }
     _lastLookaheadAttempt = now;
     final epoch = _preloadEpoch;
-    for (final index in _upcoming(count: 4)) {
+    // A car drive can last through many tracks while the screen stays locked,
+    // and every skip consumes one cached link. Resolve a deeper runway while
+    // the sandbox is still awake.
+    for (final index in _upcoming(count: 6)) {
       if (index < 0 || index >= _queue.length) continue;
       final song = _queue[index];
       if (song.isLocal || appState.isDisliked(song)) continue;
@@ -1099,8 +1136,11 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       if (_preloading.contains(key)) continue;
       _preloading.add(key);
       try {
-        final resolved = await sourceState.resolveMusicUrlAutoSwitch(song);
-        if (_disposed || epoch != _preloadEpoch || !_appInForeground) return;
+        final resolved = await sourceState.resolveMusicUrlAutoSwitch(
+          song,
+          background: !_appInForeground,
+        );
+        if (_disposed || epoch != _preloadEpoch) return;
         final url = '${resolved['url'] ?? ''}';
         if (url.isEmpty) continue;
         _cacheUrl(key, url);
@@ -1197,7 +1237,10 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
           lines = LyricParser.parse(await lrcFile.readAsString());
         }
       }
-      if (lines.isEmpty && !song.isLocal) {
+      // The built-in engine still lives in a WKWebView; asking it for lyrics
+      // behind the lock screen would only park a 35 s timeout per track. The
+      // text is not visible then anyway — the foreground resume fetches it.
+      if (lines.isEmpty && !song.isLocal && _appInForeground) {
         final result = await onlineEngine.call(
           'lyric',
           <String, dynamic>{'source': song.source, 'song': song.raw},
@@ -1343,6 +1386,67 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     await service.seek(position);
   }
 
+  /// Skip commands coming from the lock screen, a Bluetooth headset or a car
+  /// head unit. The timestamp lets a pause sent as part of the same button
+  /// press be recognised and ignored.
+  Future<void> _handleRemoteSkipNext() async {
+    _lastRemoteSkipAt = DateTime.now();
+    _ignoreRemotePause = false;
+    debugLog?.record('系统/蓝牙下一首', <String, Object?>{
+      '前台': _appInForeground,
+      '当前': _current?.name,
+      '预排': _plannedNextSong?.name,
+      '在播': _isPlaying,
+      '在加载': _loading,
+      '位置': '${_position.inSeconds}s',
+    });
+    await next();
+  }
+
+  Future<void> _handleRemoteSkipPrevious() async {
+    _lastRemoteSkipAt = DateTime.now();
+    _ignoreRemotePause = false;
+    debugLog?.record('系统/蓝牙上一首', <String, Object?>{
+      '前台': _appInForeground,
+      '当前': _current?.name,
+      '在播': _isPlaying,
+      '位置': '${_position.inSeconds}s',
+    });
+    await previous();
+  }
+
+  /// System pause. A pause that head units send together with next/previous is
+  /// swallowed: otherwise it stops the track that the skip just started.
+  Future<void> _handleRemotePause() async {
+    if (_ignoreRemotePause) {
+      _ignoreRemotePause = false;
+      debugLog?.record('忽略蓝牙切歌附带的暂停', <String, Object?>{
+        '当前': _current?.name,
+        '预排': _plannedNextSong?.name,
+      });
+      return;
+    }
+    await pause();
+  }
+
+  /// Whether [index] can be started without the source sandbox: a local file,
+  /// the item already loaded in the standby player, or a link still cached.
+  bool _playableWithoutSandbox(int index) {
+    if (index < 0 || index >= _queue.length) return false;
+    final song = _queue[index];
+    if (song.isLocal) return true;
+    // The custom-source script now runs in-process, so it can fetch a fresh
+    // link even while the lock screen is up.
+    if (sourceState.canResolveInBackground) return true;
+    final preparedUrl = _plannedNextUrl;
+    if (_plannedNextIndex == index &&
+        preparedUrl != null &&
+        service.hasPrepared(preparedUrl)) {
+      return true;
+    }
+    return _hasUsableCache(song);
+  }
+
   Future<void> next({bool auto = false}) async {
     _userPaused = false;
     if (_queue.isEmpty) return;
@@ -1357,8 +1461,8 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
 
     // Both automatic and manual advances follow the pre-computed order, so the
     // track that starts is the one whose link and standby player are already
-    // prepared. That is what lets the lock-screen next button play with the
-    // source sandbox frozen.
+    // prepared. That is what lets the lock-screen next button start instantly
+    // instead of waiting for a fresh network round trip.
     int nextIndex;
     var waitingForForeground = false;
     if (auto) {
@@ -1397,6 +1501,36 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
           appState.isDisliked(_queue[candidate])) {
         candidate = _indexAfter(candidate, auto: false);
         attempts++;
+      }
+      if (!_appInForeground &&
+          candidate >= 0 &&
+          candidate < _queue.length &&
+          !_playableWithoutSandbox(candidate)) {
+        // With a WebView fallback the source sandbox is frozen behind the lock
+        // screen: a fresh resolve can only time out and leave the car silent.
+        // Prefer another upcoming track whose link is already in hand; if none
+        // is, keep the current audio playing rather than stopping it for a
+        // command we cannot honour.
+        int? fallback;
+        for (final item in _upcoming(count: 6)) {
+          if (_playableWithoutSandbox(item)) {
+            fallback = item;
+            break;
+          }
+        }
+        if (fallback != null) {
+          candidate = fallback;
+        } else {
+          debugLog?.record('后台切歌无可用链接，保持当前播放', <String, Object?>{
+            '当前': _current?.name,
+            '目标': _queue[candidate].name,
+            '预排': _plannedNextSong?.name,
+            '模式': playMode.label,
+          });
+          _statusText = '下一首链接尚未准备好';
+          _notify();
+          return;
+        }
       }
       nextIndex = candidate;
     }
@@ -1596,12 +1730,13 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     unawaited(_loadAndPlay(song, initialPosition: _position, reason: '源就绪后重试'));
   }
 
-  /// iOS suspends the app shortly after it is backgrounded or the screen locks.
-  /// The source sandbox is a WKWebView, and its JavaScript (and therefore every
-  /// URL resolution) freezes at that moment, while the native audio player
-  /// keeps running. When the user comes back we recover automatically instead
-  /// of forcing another tap on play. We only do this if playback (or a load)
-  /// was active when we left, so a deliberate pause is never hijacked.
+  /// iOS freezes every WKWebView shortly after the app is backgrounded or the
+  /// screen locks, while the native audio player keeps running. The custom
+  /// source now executes in-process, but a script that had to fall back to the
+  /// WebView still loses its JavaScript at that moment — so when the user comes
+  /// back we recover automatically instead of forcing another tap on play. We
+  /// only do this if playback (or a load) was active when we left, so a
+  /// deliberate pause is never hijacked.
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (_disposed) return;
@@ -1665,6 +1800,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
           '位置': '${_position.inSeconds}s',
           '离开时长': '${awayFor.inSeconds}s',
         });
+        if (_lyrics.isEmpty) unawaited(_loadLyrics(song));
         unawaited(_resumeAfterForeground(song, awayFor: awayFor));
         break;
       case AppLifecycleState.detached:
