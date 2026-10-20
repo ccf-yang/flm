@@ -1291,8 +1291,8 @@ Future<void> _showPlaybackSheet(BuildContext context, Song song) {
         builder: (context, player, library, _) {
           final settings = player.appState.settings;
           final loved = library.isLoved(song);
-          return Padding(
-            padding: const EdgeInsets.fromLTRB(6, 2, 6, 16),
+          return SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(6, 2, 6, 20),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,

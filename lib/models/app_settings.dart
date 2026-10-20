@@ -67,6 +67,7 @@ class AppSettings {
     this.miniPlayerOpacity = 0.95,
     this.miniPlayerShape = 'circle',
     this.miniPlayerColor = 'mint',
+    this.miniPlayerUseImageColor = true,
     this.debugEnabled = false,
     this.showPlatformFilter = true,
     List<String>? visibleSources,
@@ -101,6 +102,9 @@ class AppSettings {
   double miniPlayerOpacity;
   String miniPlayerShape;
   String miniPlayerColor;
+  /// When true the pendant takes its accent from the current cover's dominant
+  /// colour; when false it always uses [miniPlayerColor].
+  bool miniPlayerUseImageColor;
   /// Master switch for the request-recording debug page (off by default).
   bool debugEnabled;
   /// Whether 搜索 / 歌单 / 榜单 show the platform filter row at all.
@@ -221,6 +225,7 @@ class AppSettings {
           (json['miniPlayerOpacity'] as num?)?.toDouble() ?? 0.95,
       miniPlayerShape: '${json['miniPlayerShape'] ?? 'circle'}',
       miniPlayerColor: '${json['miniPlayerColor'] ?? 'mint'}',
+      miniPlayerUseImageColor: json['miniPlayerUseImageColor'] != false,
       debugEnabled: json['debugEnabled'] == true,
       showPlatformFilter: json['showPlatformFilter'] != false,
       visibleSources: (json['visibleSources'] as List<dynamic>? ?? <dynamic>[])
@@ -254,6 +259,7 @@ class AppSettings {
         'miniPlayerOpacity': miniPlayerOpacity,
         'miniPlayerShape': miniPlayerShape,
         'miniPlayerColor': miniPlayerColor,
+        'miniPlayerUseImageColor': miniPlayerUseImageColor,
         'debugEnabled': debugEnabled,
         'showPlatformFilter': showPlatformFilter,
         'visibleSources': visibleSources,

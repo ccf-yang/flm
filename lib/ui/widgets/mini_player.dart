@@ -8,6 +8,7 @@ import 'package:provider/provider.dart';
 import '../../core/theme.dart';
 import '../../models/app_settings.dart';
 import '../../models/song.dart';
+import '../../services/cover_palette.dart';
 import '../../state/app_state.dart';
 import '../../state/player_state.dart';
 import '../screens/player_screen.dart';
@@ -39,6 +40,38 @@ class _MiniPlayerState extends State<MiniPlayer> {
   Offset? _offset;
   bool _dragging = false;
   bool _pressed = false;
+
+  /// Cover-derived accent, resolved asynchronously per song so the pendant can
+  /// match the artwork when 跟随封面配色 is on.
+  String? _accentKey;
+  Color? _autoAccent;
+
+  void _loadAccent(Song song, String key) {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final color = await CoverPalette.accent(song);
+      if (!mounted || _accentKey != key) return;
+      setState(() => _autoAccent = color);
+    });
+  }
+
+  /// The colour the pendant wears: the cover's dominant colour while 跟随封面配色
+  /// is on (falling back to the stored accent until it resolves), otherwise the
+  /// stored accent itself.
+  Color _accentFor(Song song, AppSettings settings) {
+    final center =
+        Color(AppSettings.miniPlayerColorValue(settings.miniPlayerColor));
+    if (!settings.miniPlayerUseImageColor) {
+      _accentKey = null;
+      return center;
+    }
+    final key = '${song.source}:${song.id}';
+    if (_accentKey != key) {
+      _accentKey = key;
+      _autoAccent = null;
+      _loadAccent(song, key);
+    }
+    return _autoAccent ?? center;
+  }
 
   void _openPlayer() {
     Navigator.of(context).push(
@@ -157,7 +190,7 @@ class _MiniPlayerState extends State<MiniPlayer> {
               song: song,
               player: player,
               shape: settings.miniPlayerShape,
-              accent: Color(AppSettings.miniPlayerColorValue(settings.miniPlayerColor)),
+              accent: _accentFor(song, settings),
             ),
           ),
         ),
@@ -198,11 +231,6 @@ class _GlassPendant extends StatelessWidget {
     final double corner;
     final double cover;
     switch (shape) {
-      case 'oval':
-        discW = _box;
-        discH = 52;
-        corner = discH / 2;
-        cover = discH - 16;
       case 'rect':
         discW = 60;
         discH = 60;

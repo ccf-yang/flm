@@ -81,13 +81,23 @@ class SettingsScreen extends StatelessWidget {
                               current: settings.miniPlayerShape,
                               options: const <Map<String, String>>[
                                 <String, String>{'id': 'circle', 'name': '圆形'},
-                                <String, String>{'id': 'oval', 'name': '椭圆'},
                                 <String, String>{'id': 'rect', 'name': '方形'},
                               ],
                               onSelected: (value) => appState.update(
                                 (item) => item.miniPlayerShape = value,
                               ),
                             ),
+                          ),
+                          _SwitchRow(
+                            icon: CupertinoIcons.photo,
+                            label: '跟随封面配色',
+                            caption: '开启时取当前封面的主色调，关闭则用下面的中心配色',
+                            value: settings.miniPlayerUseImageColor,
+                            onChanged: (value) {
+                              appState.update(
+                                (item) => item.miniPlayerUseImageColor = value,
+                              );
+                            },
                           ),
                           _SettingRow(
                             icon: CupertinoIcons.paintbrush_fill,
@@ -317,8 +327,6 @@ class SettingsScreen extends StatelessWidget {
 
   String _shapeLabel(String shape) {
     switch (shape) {
-      case 'oval':
-        return '椭圆';
       case 'rect':
         return '方形';
       default:
