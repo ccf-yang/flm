@@ -43,6 +43,14 @@ cp "$ROOT/tool/android_overlay/AndroidManifest.xml" \
 rm -f "$ROOT/android/app/src/main/res/drawable-v21/launch_background.xml"
 cp -R "$ROOT/tool/android_overlay/res/." "$ROOT/android/app/src/main/res/"
 
+# flutter_js still compiles its Kotlin to JVM 1.8 while its Java task targets
+# 11, which newer Kotlin Gradle Plugins treat as a fatal mismatch. Both outputs
+# are valid for D8, so keep the check as a warning instead of patching a
+# dependency we do not own.
+echo "==> relaxing the JVM target consistency check"
+printf '\n# Added by tool/bootstrap_android.sh: see the comment above.\nkotlin.jvm.target.validation.mode=warning\n' \
+  >> "$ROOT/android/gradle.properties"
+
 echo "==> checking the generated configuration"
 grep -q 'applicationId = "com.flm.music"' "$ROOT/android/app/build.gradle.kts" \
   || { echo "error: applicationId was not generated as com.flm.music" >&2; exit 1; }
