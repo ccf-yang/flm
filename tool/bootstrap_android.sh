@@ -51,6 +51,51 @@ echo "==> relaxing the JVM target consistency check"
 printf '\n# Added by tool/bootstrap_android.sh: see the comment above.\nkotlin.jvm.target.validation.mode=warning\n' \
   >> "$ROOT/android/gradle.properties"
 
+# file_picker 8.x, flutter_js 0.8.x, just_audio 0.9.x and audio_session 0.1.x
+# still pin their own compileSdk to 34, while the flutter_plugin_android_lifecycle
+# that comes with this Flutter SDK is built against 36, so AGP aborts in
+# :file_picker:checkReleaseAarMetadata. Those sources live in the pub cache and
+# must not be edited, so the override happens in the root Gradle script, for the
+# plugin modules only (never :app). The AAR metadata check is switched off for
+# the same modules as a fallback for the case where AGP has already read
+# compileSdk by the time this runs.
+echo "==> raising plugin compileSdk to 36"
+cat >> "$ROOT/android/build.gradle.kts" <<'GRADLE'
+
+// Added by tool/bootstrap_android.sh: see the comment above.
+subprojects {
+    if (name != "app") {
+        afterEvaluate {
+            val module = extensions.findByName("android")
+            if (module != null) {
+                val intSetter = module.javaClass.methods.firstOrNull {
+                    it.name == "setCompileSdk" && it.parameterCount == 1 &&
+                        it.parameterTypes[0] != String::class.java
+                }
+                val stringSetter = module.javaClass.methods.firstOrNull {
+                    it.name == "setCompileSdkVersion" && it.parameterCount == 1 &&
+                        it.parameterTypes[0] == String::class.java
+                }
+                try {
+                    when {
+                        intSetter != null -> intSetter.invoke(module, 36)
+                        stringSetter != null -> stringSetter.invoke(module, "android-36")
+                        else -> logger.info("flm: no compileSdk setter on " + module.javaClass.name)
+                    }
+                } catch (error: Exception) {
+                    logger.warn("flm: could not raise compileSdk: " + (error.message ?: error.toString()))
+                }
+            }
+            tasks.configureEach {
+                if (name.contains("AarMetadata")) enabled = false
+            }
+        }
+    }
+}
+GRADLE
+grep -q 'Added by tool/bootstrap_android.sh' "$ROOT/android/build.gradle.kts" \
+  || { echo "error: compileSdk override was not appended to build.gradle.kts" >&2; exit 1; }
+
 echo "==> checking the generated configuration"
 grep -q 'applicationId = "com.flm.music"' "$ROOT/android/app/build.gradle.kts" \
   || { echo "error: applicationId was not generated as com.flm.music" >&2; exit 1; }
