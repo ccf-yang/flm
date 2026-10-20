@@ -205,6 +205,20 @@ ThemeData buildAppTheme(Brightness brightness) {
       surfaceTintColor: Colors.transparent,
       modalBarrierColor: Color(0x99000000),
     ),
+    // Every pushed page slides in from the right and can be dismissed with an
+    // edge swipe from the left, on every platform. iOS does this by default;
+    // being explicit also keeps Android/desktop consistent and makes the
+    // gesture available to any RouteBuilder we add later.
+    pageTransitionsTheme: const PageTransitionsTheme(
+      builders: <TargetPlatform, PageTransitionsBuilder>{
+        TargetPlatform.android: CupertinoPageTransitionsBuilder(),
+        TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
+        TargetPlatform.macOS: CupertinoPageTransitionsBuilder(),
+        TargetPlatform.fuchsia: CupertinoPageTransitionsBuilder(),
+        TargetPlatform.linux: CupertinoPageTransitionsBuilder(),
+        TargetPlatform.windows: CupertinoPageTransitionsBuilder(),
+      },
+    ),
     dialogTheme: DialogThemeData(
       backgroundColor: isDark ? AppColors.darkSurface : AppColors.lightSurface,
       surfaceTintColor: Colors.transparent,

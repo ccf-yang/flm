@@ -14,10 +14,11 @@ import 'tabs/search_tab.dart';
 import 'widgets/mini_player.dart';
 
 /// Height left free at the bottom of tab scrolls for the floating chrome.
-const double kRootChromeSpace = 150;
+const double kRootChromeSpace = 160;
 
 /// Visual height of the tab bar row, excluding the bottom safe-area inset.
-const double kTabBarHeight = 52;
+/// Tall enough that each tab is a comfortable thumb target.
+const double kTabBarHeight = 62;
 
 class RootShell extends StatefulWidget {
   const RootShell({super.key});
@@ -124,7 +125,7 @@ class _AuroraTabBar extends StatelessWidget {
           child: SafeArea(
             top: false,
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(12, 5, 12, 5),
+              padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
               child: Row(
                 children: List<Widget>.generate(_tabs.length, (i) {
                   final tab = _tabs[i];
@@ -132,32 +133,37 @@ class _AuroraTabBar extends StatelessWidget {
                   return Expanded(
                     child: Pressable(
                       onTap: () => onTap(i),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: <Widget>[
-                          Container(
-                            width: 42,
-                            height: 27,
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(999),
-                              color: active ? accentSoftColor(context) : Colors.transparent,
+                      child: SizedBox(
+                        height: kTabBarHeight - 12,
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: <Widget>[
+                            Container(
+                              width: 46,
+                              height: 30,
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(999),
+                                color: active
+                                    ? accentSoftColor(context)
+                                    : Colors.transparent,
+                              ),
+                              child: Icon(
+                                tab['icon'] as IconData,
+                                size: 22,
+                                color: active ? accentFor(context) : faintFor(context),
+                              ),
                             ),
-                            child: Icon(
-                              tab['icon'] as IconData,
-                              size: 21,
-                              color: active ? accentFor(context) : faintFor(context),
+                            const SizedBox(height: 4),
+                            Text(
+                              tab['label'] as String,
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w600,
+                                color: active ? accentFor(context) : faintFor(context),
+                              ),
                             ),
-                          ),
-                          const SizedBox(height: 3),
-                          Text(
-                            tab['label'] as String,
-                            style: TextStyle(
-                              fontSize: 9,
-                              fontWeight: FontWeight.w600,
-                              color: active ? accentFor(context) : faintFor(context),
-                            ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
                     ),
                   );

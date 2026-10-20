@@ -23,7 +23,7 @@ class LeaderboardTab extends StatelessWidget {
 
     void openBoard(Map<String, dynamic> board) {
       Navigator.of(context).push(
-        MaterialPageRoute<void>(
+        CupertinoPageRoute<void>(
           builder: (_) => LeaderboardDetailScreen(
             source: '${board['source'] ?? discover.leaderboardSource}',
             id: '${board['id'] ?? ''}',

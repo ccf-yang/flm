@@ -118,7 +118,7 @@ class _SearchTabState extends State<SearchTab> {
               trailing: Pressable(
                 onTap: () {
                   Navigator.of(context).push(
-                    MaterialPageRoute<void>(
+                    CupertinoPageRoute<void>(
                       builder: (_) => const CustomSourcesScreen(),
                     ),
                   );
@@ -357,7 +357,7 @@ class _SearchTabState extends State<SearchTab> {
                   item: item,
                   onTap: () {
                     Navigator.of(context).push(
-                      MaterialPageRoute<void>(
+                      CupertinoPageRoute<void>(
                         builder: (_) => SonglistDetailScreen(
                           source: '${item['source'] ?? ''}',
                           id: '${item['id'] ?? ''}',

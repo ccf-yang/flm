@@ -224,7 +224,7 @@ class SettingsScreen extends StatelessWidget {
                             caption: _sourceSubtitle(sourceState),
                             onTap: () {
                               Navigator.of(context).push(
-                                MaterialPageRoute<void>(
+                                CupertinoPageRoute<void>(
                                   builder: (_) => const CustomSourcesScreen(),
                                 ),
                               );
@@ -253,7 +253,7 @@ class SettingsScreen extends StatelessWidget {
                                 context.read<DebugLog>().setEnabled(true);
                               }
                               Navigator.of(context).push(
-                                MaterialPageRoute<void>(
+                                CupertinoPageRoute<void>(
                                   builder: (_) => const DebugScreen(),
                                 ),
                               );

@@ -44,7 +44,7 @@ class _DiscoverTabState extends State<DiscoverTab> {
 
   void _openSonglist(BuildContext context, Map<String, dynamic> item, DiscoverState discover) {
     Navigator.of(context).push(
-      MaterialPageRoute<void>(
+      CupertinoPageRoute<void>(
         builder: (_) => SonglistDetailScreen(
           source: '${item['source'] ?? discover.songlistSource}',
           id: '${item['id'] ?? ''}',

@@ -3,6 +3,7 @@ import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/formatters.dart';
@@ -29,10 +30,42 @@ class _PlayerScreenState extends State<PlayerScreen> {
   final PageController _pageController = PageController();
   int _page = 0;
 
+  /// Cumulative vertical drag on the player. Negative values mean the finger
+  /// moved up; releasing past [_swipeTrigger] starts the next track.
+  double _swipeDy = 0;
+
+  /// Horizontal distance travelled by the left-edge back gesture.
+  double _backDx = 0;
+
+  static const double _swipeTrigger = 54;
+
   @override
   void dispose() {
     _pageController.dispose();
     super.dispose();
+  }
+
+  void _onVerticalDragStart(DragStartDetails details) {
+    _swipeDy = 0;
+  }
+
+  void _onVerticalDragUpdate(DragUpdateDetails details) {
+    final next = (_swipeDy + details.delta.dy).clamp(-160.0, 0.0).toDouble();
+    if (next != _swipeDy) setState(() => _swipeDy = next);
+  }
+
+  void _onVerticalDragEnd(DragEndDetails details) {
+    final goNext = _swipeDy <= -_swipeTrigger ||
+        details.velocity.pixelsPerSecond.dy <= -420;
+    setState(() => _swipeDy = 0);
+    if (!goNext) return;
+    HapticFeedback.mediumImpact();
+    context.read<PlayerController>().next();
+  }
+
+  void _onVerticalDragCancel() {
+    if (_swipeDy == 0) return;
+    setState(() => _swipeDy = 0);
   }
 
   @override
@@ -41,6 +74,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final library = context.watch<LibraryState>();
     final song = player.current;
     final isDark = auroraIsDark(context);
+    final media = MediaQuery.of(context);
+    // The back strip sits below the top bar and above the controls, so it never
+    // steals taps from the close button or the transport row.
+    final backZoneHeight = math.max(
+      140.0,
+      media.size.height - media.padding.top - media.padding.bottom - 250,
+    );
 
     return Scaffold(
       backgroundColor: const Color(0xFF06080A),
@@ -117,102 +157,164 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 ),
               ),
             )
-          else
+          else ...<Widget>[
             SafeArea(
-              bottom: false,
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(21, 8, 21, 20),
-                child: Column(
-                  children: <Widget>[
-                    _PlayerTop(player: player, song: song),
-                    Expanded(
-                      child: PageView(
-                        controller: _pageController,
-                        onPageChanged: (value) => setState(() => _page = value),
+              bottom: true,
+              child: GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onVerticalDragStart: _onVerticalDragStart,
+                onVerticalDragUpdate: _onVerticalDragUpdate,
+                onVerticalDragEnd: _onVerticalDragEnd,
+                onVerticalDragCancel: _onVerticalDragCancel,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 6, 20, 6),
+                  child: Column(
+                    children: <Widget>[
+                      _PlayerTop(player: player, song: song),
+                      Expanded(
+                        child: PageView(
+                          controller: _pageController,
+                          onPageChanged: (value) => setState(() => _page = value),
+                          children: <Widget>[
+                            _CoverPage(player: player, song: song),
+                            LyricView(
+                              lines: player.lyrics,
+                              activeLine: player.activeLine,
+                              onSeek: player.seek,
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
                         children: <Widget>[
-                          _CoverPage(player: player, song: song),
-                          LyricView(
-                            lines: player.lyrics,
-                            activeLine: player.activeLine,
-                            onSeek: player.seek,
-                          ),
+                          _pageDot(0),
+                          const SizedBox(width: 2),
+                          _pageDot(1),
                         ],
                       ),
-                    ),
-                    const SizedBox(height: 12),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: <Widget>[
-                        _pageDot(0),
-                        const SizedBox(width: 6),
-                        _pageDot(1),
-                      ],
-                    ),
-                    _TrackInfo(
-                      song: song,
-                      loved: library.isLoved(song),
-                      onFavorite: () {
-                        final loved = library.toggleLove(song);
-                        flmToast(context, loved ? '已收藏到「我喜欢」' : '已取消收藏');
-                      },
-                    ),
-                    _SeekBar(player: player),
-                    _Controls(player: player, song: song),
-                    const SizedBox(height: 7),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                      children: <Widget>[
-                        _PAction(
-                          icon: CupertinoIcons.timer,
-                          label: player.sleepRemaining == null
-                              ? '定时'
-                              : formatDuration(player.sleepRemaining!),
-                          onTap: () => _showSleepSheet(context),
-                        ),
-                        _PAction(
-                          icon: CupertinoIcons.slider_horizontal_3,
-                          label: '音量',
-                          onTap: () => _showPlaybackSheet(context),
-                        ),
-                        _PAction(
-                          icon: CupertinoIcons.music_note_list,
-                          label: '队列',
-                          onTap: () => _showQueueSheet(context),
-                        ),
-                        _PAction(
-                          icon: CupertinoIcons.text_quote,
-                          label: '详情',
-                          onTap: () => showSongActions(context, song),
-                        ),
-                      ],
-                    ),
-                  ],
+                      _TrackInfo(song: song),
+                      _SeekBar(player: player),
+                      _Controls(
+                        player: player,
+                        loved: library.isLoved(song),
+                        onFavorite: () {
+                          final loved = library.toggleLove(song);
+                          flmToast(context, loved ? '已收藏到「我喜欢」' : '已取消收藏');
+                        },
+                      ),
+                      const SizedBox(height: 2),
+                      _BottomBar(player: player, song: song),
+                    ],
+                  ),
                 ),
               ),
             ),
+            // Swipe-up feedback. It only appears once the finger has moved,
+            // so it never covers the artwork at rest.
+            Positioned(
+              top: media.padding.top + 58,
+              left: 0,
+              right: 0,
+              child: _swipeHint(),
+            ),
+            // Left-edge swipe back, matching the Cupertino pages. It is a
+            // narrow strip above the content so the cover PageView cannot
+            // swallow the gesture.
+            Positioned(
+              left: 0,
+              top: media.padding.top + 58,
+              width: 22,
+              height: backZoneHeight,
+              child: GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onHorizontalDragStart: (_) => _backDx = 0,
+                onHorizontalDragUpdate: (details) => _backDx += details.delta.dx,
+                onHorizontalDragEnd: (details) {
+                  final travelled = _backDx;
+                  _backDx = 0;
+                  if (travelled > 48 ||
+                      details.velocity.pixelsPerSecond.dx > 360) {
+                    Navigator.of(context).maybePop();
+                  }
+                },
+                onHorizontalDragCancel: () => _backDx = 0,
+              ),
+            ),
+          ],
         ],
+      ),
+    );
+  }
+
+  Widget _swipeHint() {
+    final progress =
+        (-_swipeDy / _swipeTrigger).clamp(0.0, 1.0).toDouble();
+    return IgnorePointer(
+      child: Opacity(
+        opacity: progress,
+        child: Transform.translate(
+          offset: Offset(0, 8 * (1 - progress)),
+          child: Center(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              decoration: BoxDecoration(
+                color: const Color(0xD9101519),
+                borderRadius: BorderRadius.circular(999),
+                border: Border.all(color: const Color(0x2EFFFFFF)),
+              ),
+              child: const Row(
+                mainAxisSize: MainAxisSize.min,
+                children: <Widget>[
+                  Icon(
+                    CupertinoIcons.chevron_up,
+                    size: 14,
+                    color: AppColors.accentDark,
+                  ),
+                  SizedBox(width: 6),
+                  Text(
+                    '松开播放下一首',
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.white,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
 
   Widget _pageDot(int index) {
     final active = index == _page;
-    return GestureDetector(
-      onTap: () {
-        _pageController.animateToPage(
-          index,
-          duration: const Duration(milliseconds: 320),
-          curve: Curves.easeOutCubic,
-        );
-      },
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 280),
-        curve: AuroraMotion.ease,
-        width: active ? 17 : 5,
-        height: 5,
-        decoration: BoxDecoration(
-          color: active ? AppColors.accentDark : const Color(0x38FFFFFF),
-          borderRadius: BorderRadius.circular(999),
+    return SizedBox(
+      width: 32,
+      height: 30,
+      child: Center(
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () {
+            _pageController.animateToPage(
+              index,
+              duration: const Duration(milliseconds: 320),
+              curve: Curves.easeOutCubic,
+            );
+          },
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 280),
+            curve: AuroraMotion.ease,
+            width: active ? 20 : 7,
+            height: 7,
+            decoration: BoxDecoration(
+              color: active ? AppColors.accentDark : const Color(0x3DFFFFFF),
+              borderRadius: BorderRadius.circular(999),
+            ),
+          ),
         ),
       ),
     );
@@ -310,14 +412,14 @@ class _GlassIconBtn extends StatelessWidget {
     final button = Pressable(
       onTap: onTap,
       child: Container(
-        width: 36,
-        height: 36,
+        width: 46,
+        height: 46,
         decoration: BoxDecoration(
           color: const Color(0x12FFFFFF),
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(15),
           border: Border.all(color: const Color(0x1FFFFFFF)),
         ),
-        child: Icon(icon, size: 17, color: const Color(0xD1FFFFFF)),
+        child: Icon(icon, size: 20, color: const Color(0xD1FFFFFF)),
       ),
     );
     if (tooltip == null) return button;
@@ -335,7 +437,7 @@ class _CoverPage extends StatelessWidget {
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final size = math.min(constraints.maxWidth * 0.86, constraints.maxHeight * 0.72);
+        final size = math.min(constraints.maxWidth * 0.88, constraints.maxHeight * 0.80);
         return Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: <Widget>[
@@ -425,69 +527,37 @@ class _CoverPage extends StatelessWidget {
 }
 
 class _TrackInfo extends StatelessWidget {
-  const _TrackInfo({
-    required this.song,
-    required this.loved,
-    required this.onFavorite,
-  });
+  const _TrackInfo({required this.song});
 
   final Song song;
-  final bool loved;
-  final VoidCallback onFavorite;
 
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.only(top: 4),
-      child: Row(
+      padding: const EdgeInsets.only(top: 2),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                Text(
-                  song.displayTitle,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 21,
-                    height: 1.2,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: -0.84,
-                    color: Colors.white,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  song.subtitle.isEmpty ? song.displaySinger : song.subtitle,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 10.5,
-                    color: Color(0x7AFFFFFF),
-                  ),
-                ),
-              ],
+          Text(
+            song.displayTitle,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              fontSize: 22,
+              height: 1.2,
+              fontWeight: FontWeight.w700,
+              letterSpacing: -0.84,
+              color: Colors.white,
             ),
           ),
-          const SizedBox(width: 12),
-          Pressable(
-            onTap: onFavorite,
-            child: Container(
-              width: 38,
-              height: 38,
-              decoration: BoxDecoration(
-                color: loved ? const Color(0x1AFF8F7A) : const Color(0x0EFFFFFF),
-                borderRadius: BorderRadius.circular(13),
-                border: Border.all(
-                  color: loved ? const Color(0x47FF8F7A) : const Color(0x1AFFFFFF),
-                ),
-              ),
-              child: Icon(
-                loved ? CupertinoIcons.heart_fill : CupertinoIcons.heart,
-                size: 18,
-                color: loved ? const Color(0xFFFF8F7A) : const Color(0x85FFFFFF),
-              ),
+          const SizedBox(height: 5),
+          Text(
+            song.subtitle.isEmpty ? song.displaySinger : song.subtitle,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              fontSize: 11.5,
+              color: Color(0x7AFFFFFF),
             ),
           ),
         ],
@@ -509,18 +579,19 @@ class _SeekBar extends StatelessWidget {
         : (player.position.inMilliseconds / maxMs).clamp(0.0, 1.0).toDouble();
 
     return Padding(
-      padding: const EdgeInsets.only(top: 9),
+      padding: const EdgeInsets.only(top: 10),
       child: Column(
         children: <Widget>[
           SliderTheme(
             data: const SliderThemeData(
-              trackHeight: 3,
+              trackHeight: 4,
               activeTrackColor: AppColors.accentDark,
               inactiveTrackColor: Color(0x29FFFFFF),
               thumbColor: Colors.white,
-              overlayColor: Color(0x149AF4D2),
+              overlayColor: Color(0x1F9AF4D2),
               trackShape: RectangularSliderTrackShape(),
-              thumbShape: RoundSliderThumbShape(enabledThumbRadius: 6),
+              thumbShape: RoundSliderThumbShape(enabledThumbRadius: 7),
+              overlayShape: RoundSliderOverlayShape(overlayRadius: 20),
             ),
             child: Slider(
               value: value,
@@ -538,17 +609,17 @@ class _SeekBar extends StatelessWidget {
                 Text(
                   formatDuration(player.position),
                   style: const TextStyle(
-                    fontSize: 9.5,
+                    fontSize: 10.5,
                     fontWeight: FontWeight.w500,
-                    color: Color(0x5CFFFFFF),
+                    color: Color(0x70FFFFFF),
                   ),
                 ),
                 Text(
                   formatDuration(player.duration),
                   style: const TextStyle(
-                    fontSize: 9.5,
+                    fontSize: 10.5,
                     fontWeight: FontWeight.w500,
-                    color: Color(0x5CFFFFFF),
+                    color: Color(0x70FFFFFF),
                   ),
                 ),
               ],
@@ -561,10 +632,15 @@ class _SeekBar extends StatelessWidget {
 }
 
 class _Controls extends StatelessWidget {
-  const _Controls({required this.player, required this.song});
+  const _Controls({
+    required this.player,
+    required this.loved,
+    required this.onFavorite,
+  });
 
   final PlayerController player;
-  final Song song;
+  final bool loved;
+  final VoidCallback onFavorite;
 
   static IconData _modeIcon(PlayMode mode) {
     switch (mode) {
@@ -582,7 +658,7 @@ class _Controls extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.only(top: 3),
+      padding: const EdgeInsets.only(top: 4),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
         children: <Widget>[
@@ -597,15 +673,16 @@ class _Controls extends StatelessWidget {
           ),
           _Ctrl(
             icon: CupertinoIcons.backward_fill,
-            size: 24,
+            size: 56,
+            iconSize: 27,
             bright: true,
             onTap: player.previous,
           ),
           Pressable(
             onTap: player.togglePlay,
             child: Container(
-              width: 66,
-              height: 66,
+              width: 76,
+              height: 76,
               decoration: const BoxDecoration(
                 shape: BoxShape.circle,
                 gradient: LinearGradient(
@@ -616,16 +693,16 @@ class _Controls extends StatelessWidget {
                 boxShadow: <BoxShadow>[
                   BoxShadow(
                     color: Color(0x4D61E6B8),
-                    blurRadius: 34,
-                    offset: Offset(0, 14),
+                    blurRadius: 36,
+                    offset: Offset(0, 15),
                   ),
                 ],
               ),
               child: player.loading
                   ? const Padding(
-                      padding: EdgeInsets.all(20),
+                      padding: EdgeInsets.all(23),
                       child: CircularProgressIndicator(
-                        strokeWidth: 2.2,
+                        strokeWidth: 2.4,
                         color: Color(0xFF06241B),
                       ),
                     )
@@ -633,20 +710,24 @@ class _Controls extends StatelessWidget {
                       player.willPlay
                           ? CupertinoIcons.pause_fill
                           : CupertinoIcons.play_fill,
-                      size: 28,
+                      size: 31,
                       color: const Color(0xFF06241B),
                     ),
             ),
           ),
           _Ctrl(
             icon: CupertinoIcons.forward_fill,
-            size: 24,
+            size: 56,
+            iconSize: 27,
             bright: true,
             onTap: player.next,
           ),
           _Ctrl(
-            icon: CupertinoIcons.music_note_list,
-            onTap: () => _showQueueSheet(context),
+            icon: loved ? CupertinoIcons.heart_fill : CupertinoIcons.heart,
+            size: 56,
+            iconSize: 24,
+            color: loved ? const Color(0xFFFF8F7A) : const Color(0x99FFFFFF),
+            onTap: onFavorite,
           ),
         ],
       ),
@@ -658,27 +739,75 @@ class _Ctrl extends StatelessWidget {
   const _Ctrl({
     required this.icon,
     required this.onTap,
-    this.size = 23,
+    this.size = 52,
+    this.iconSize = 22,
     this.bright = false,
+    this.color,
   });
 
   final IconData icon;
   final VoidCallback onTap;
   final double size;
+  final double iconSize;
   final bool bright;
+  final Color? color;
 
   @override
   Widget build(BuildContext context) {
     return Pressable(
       onTap: onTap,
       child: SizedBox(
-        width: 42,
-        height: 42,
+        width: size,
+        height: size,
         child: Icon(
           icon,
-          size: size,
-          color: bright ? const Color(0xCCFFFFFF) : const Color(0x99FFFFFF),
+          size: iconSize,
+          color: color ?? (bright ? const Color(0xCCFFFFFF) : const Color(0x99FFFFFF)),
         ),
+      ),
+    );
+  }
+}
+
+/// The row under the transport controls: timer, volume and details on the
+/// left; the play queue pinned to the far right where the thumb rests.
+class _BottomBar extends StatelessWidget {
+  const _BottomBar({required this.player, required this.song});
+
+  final PlayerController player;
+  final Song song;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 62,
+      child: Row(
+        children: <Widget>[
+          _PAction(
+            icon: CupertinoIcons.timer,
+            label: player.sleepRemaining == null
+                ? '定时'
+                : formatDuration(player.sleepRemaining!),
+            onTap: () => _showSleepSheet(context),
+          ),
+          const SizedBox(width: 4),
+          _PAction(
+            icon: CupertinoIcons.slider_horizontal_3,
+            label: '音量',
+            onTap: () => _showPlaybackSheet(context),
+          ),
+          const SizedBox(width: 4),
+          _PAction(
+            icon: CupertinoIcons.text_quote,
+            label: '详情',
+            onTap: () => showSongActions(context, song),
+          ),
+          const Spacer(),
+          _QueueAction(
+            count: player.queue.length,
+            onTap: () => _showQueueSheet(context),
+          ),
+        ],
       ),
     );
   }
@@ -699,20 +828,79 @@ class _PAction extends StatelessWidget {
   Widget build(BuildContext context) {
     return Pressable(
       onTap: onTap,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      child: SizedBox(
+        width: 56,
+        height: 58,
         child: Column(
-          mainAxisSize: MainAxisSize.min,
+          mainAxisAlignment: MainAxisAlignment.center,
           children: <Widget>[
-            Icon(icon, size: 18, color: const Color(0x66FFFFFF)),
-            const SizedBox(height: 3),
+            Icon(icon, size: 21, color: const Color(0x8AFFFFFF)),
+            const SizedBox(height: 4),
             Text(
               label,
               style: const TextStyle(
-                fontSize: 8.5,
+                fontSize: 10,
                 fontWeight: FontWeight.w500,
-                color: Color(0x66FFFFFF),
+                color: Color(0x8AFFFFFF),
               ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _QueueAction extends StatelessWidget {
+  const _QueueAction({required this.onTap, required this.count});
+
+  final VoidCallback onTap;
+  final int count;
+
+  @override
+  Widget build(BuildContext context) {
+    return Pressable(
+      onTap: onTap,
+      child: Container(
+        height: 50,
+        padding: const EdgeInsets.symmetric(horizontal: 15),
+        decoration: BoxDecoration(
+          color: const Color(0x1AFFFFFF),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: const Color(0x2EFFFFFF)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            const Icon(
+              CupertinoIcons.music_note_list,
+              size: 20,
+              color: Color(0xE6FFFFFF),
+            ),
+            const SizedBox(width: 8),
+            Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                const Text(
+                  '队列',
+                  style: TextStyle(
+                    fontSize: 12,
+                    height: 1.1,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xE6FFFFFF),
+                  ),
+                ),
+                if (count > 0)
+                  Text(
+                    '$count 首',
+                    style: const TextStyle(
+                      fontSize: 9,
+                      height: 1.7,
+                      color: Color(0x70FFFFFF),
+                    ),
+                  ),
+              ],
             ),
           ],
         ),

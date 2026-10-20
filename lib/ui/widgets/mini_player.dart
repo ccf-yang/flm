@@ -25,7 +25,7 @@ class MiniPlayer extends StatefulWidget {
   /// (tab bar + safe area + gap), so the pendant never covers the tabs.
   final double bottomReserved;
 
-  static const double diameter = 60;
+  static const double diameter = 66;
 
   @override
   State<MiniPlayer> createState() => _MiniPlayerState();
@@ -249,7 +249,7 @@ class _GlassPendant extends StatelessWidget {
               ),
             ),
           ),
-          CoverArt(song: song, size: 44, radius: 22),
+          CoverArt(song: song, size: 48, radius: 24),
           // Progress ring (or a spinner while the URL is being fetched).
           Positioned.fill(
             child: player.loading

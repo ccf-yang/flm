@@ -35,7 +35,7 @@ class LibraryTab extends StatelessWidget {
                   tooltip: '自定义源',
                   onTap: () {
                     Navigator.of(context).push(
-                      MaterialPageRoute<void>(builder: (_) => const CustomSourcesScreen()),
+                      CupertinoPageRoute<void>(builder: (_) => const CustomSourcesScreen()),
                     );
                   },
                 ),
@@ -45,7 +45,7 @@ class LibraryTab extends StatelessWidget {
                   tooltip: '设置',
                   onTap: () {
                     Navigator.of(context).push(
-                      MaterialPageRoute<void>(builder: (_) => const SettingsScreen()),
+                      CupertinoPageRoute<void>(builder: (_) => const SettingsScreen()),
                     );
                   },
                 ),
@@ -105,7 +105,7 @@ class LibraryTab extends StatelessWidget {
 
   void _openPlaylist(BuildContext context, Playlist playlist) {
     Navigator.of(context).push(
-      MaterialPageRoute<void>(
+      CupertinoPageRoute<void>(
         builder: (_) => PlaylistDetailScreen(playlistId: playlist.id),
       ),
     );
