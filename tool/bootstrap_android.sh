@@ -56,9 +56,10 @@ printf '\n# Added by tool/bootstrap_android.sh: see the comment above.\nkotlin.j
 # that comes with this Flutter SDK is built against 36, so AGP aborts in
 # :file_picker:checkReleaseAarMetadata. Those sources live in the pub cache and
 # must not be edited, so the override happens in the root Gradle script, for the
-# plugin modules only (never :app). The AAR metadata check is switched off for
-# the same modules as a fallback for the case where AGP has already read
-# compileSdk by the time this runs.
+# plugin modules only (never :app). As a fallback for the case where AGP has
+# already read compileSdk by the time this runs, the same modules skip their
+# check*AarMetadata tasks -- only the checks: write*AarMetadata still has to run,
+# because :app:checkReleaseAarMetadata reads the file those tasks produce.
 echo "==> raising plugin compileSdk to 36"
 cat >> "$ROOT/android/build.gradle.kts" <<'GRADLE'
 
@@ -87,7 +88,7 @@ subprojects {
                 }
             }
             tasks.configureEach {
-                if (name.contains("AarMetadata")) enabled = false
+                if (name.startsWith("check") && name.endsWith("AarMetadata")) enabled = false
             }
         }
     }
