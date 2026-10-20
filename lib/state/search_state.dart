@@ -16,7 +16,11 @@ class SearchState extends ChangeNotifier {
   SearchState({
     required this.engine,
     required this.appState,
-  }) : source = appState.settings.searchSource;
+  }) : source = appState.settings.searchSourceId() {
+    // 设置 → 音乐平台 changes what the filter row offers, so follow it here:
+    // the platform actually queried has to match the chips being shown.
+    appState.addListener(_onSettingsChanged);
+  }
 
   final OnlineEngine engine;
   final AppState appState;
@@ -35,6 +39,14 @@ class SearchState extends ChangeNotifier {
 
   Timer? _tipTimer;
   int _searchToken = 0;
+
+  void _onSettingsChanged() {
+    final next = appState.settings.searchSourceId();
+    if (next == source) return;
+    source = next;
+    notifyListeners();
+    if (query.trim().isNotEmpty) unawaited(search(query));
+  }
 
   void setType(SearchType next) {
     if (type == next) return;
@@ -223,6 +235,7 @@ class SearchState extends ChangeNotifier {
   @override
   void dispose() {
     _tipTimer?.cancel();
+    appState.removeListener(_onSettingsChanged);
     super.dispose();
   }
 }

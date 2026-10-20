@@ -91,7 +91,7 @@ class _SearchTabState extends State<SearchTab> {
     return Scaffold(
       body: search.query.isEmpty
           ? _buildHero(context, search, appState, top)
-          : _buildResults(context, search, top),
+          : _buildResults(context, search, appState, top),
     );
   }
 
@@ -171,6 +171,7 @@ class _SearchTabState extends State<SearchTab> {
           sliver: SliverToBoxAdapter(
             child: SourceChips(
               value: search.source,
+              settings: appState.settings,
               onChanged: (value) async {
                 await search.setSource(value);
               },
@@ -255,7 +256,12 @@ class _SearchTabState extends State<SearchTab> {
 
   // ---------- Results (screen-results) ----------
 
-  Widget _buildResults(BuildContext context, SearchState search, double top) {
+  Widget _buildResults(
+    BuildContext context,
+    SearchState search,
+    AppState appState,
+    double top,
+  ) {
     final musicCount = search.musicResults.length;
     final listCount = search.songlistResults.length;
     final platforms = <String>{
@@ -452,6 +458,7 @@ class _SearchTabState extends State<SearchTab> {
             padding: const EdgeInsets.only(top: 10),
             child: SourceChips(
               value: search.source,
+              settings: appState.settings,
               onChanged: (value) async {
                 await search.setSource(value);
               },

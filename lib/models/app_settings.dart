@@ -18,6 +18,17 @@ extension PlayModeText on PlayMode {
 }
 
 class AppSettings {
+  /// Every platform the filter rows can offer, in display order. `all` is the
+  /// aggregate search, the rest are per-platform sources.
+  static const List<String> kPlatformIds = <String>[
+    'all',
+    'kw',
+    'kg',
+    'tx',
+    'wy',
+    'mg',
+  ];
+
   AppSettings({
     this.themeMode = 'system',
     this.quality = '320k',
@@ -40,8 +51,11 @@ class AppSettings {
     this.miniPlayerX = -1,
     this.miniPlayerY = -1,
     this.debugEnabled = false,
+    this.showPlatformFilter = true,
+    List<String>? visibleSources,
   })  : searchHistory = searchHistory ?? <String>[],
-        dislikedKeys = dislikedKeys ?? <String>[];
+        dislikedKeys = dislikedKeys ?? <String>[],
+        visibleSources = visibleSources ?? List<String>.from(kPlatformIds);
 
   String themeMode;
   String quality;
@@ -67,6 +81,50 @@ class AppSettings {
   double miniPlayerY;
   /// Master switch for the request-recording debug page (off by default).
   bool debugEnabled;
+  /// Whether 搜索 / 歌单 / 榜单 show the platform filter row at all.
+  bool showPlatformFilter;
+  /// Platforms the user keeps as categories; order follows [kPlatformIds].
+  List<String> visibleSources;
+
+  /// The platform ids that take part in categorisation, always at least one.
+  List<String> get platformIds {
+    final kept = visibleSources.where(kPlatformIds.contains).toList();
+    return kept.isEmpty ? List<String>.from(kPlatformIds) : kept;
+  }
+
+  /// Ids the filter rows may render; empty means the rows are hidden.
+  List<String> visiblePlatformIds({bool allowAggregate = true}) {
+    if (!showPlatformFilter) return const <String>[];
+    return platformIds.where((id) => allowAggregate || id != 'all').toList();
+  }
+
+  /// First platform that is not the aggregate entry.
+  String get _firstRealPlatform {
+    for (final id in platformIds) {
+      if (id != 'all') return id;
+    }
+    return 'kw';
+  }
+
+  /// What the search tab actually queries. Without the filter row the user
+  /// asked for no platform categorisation, so search aggregates every source.
+  String searchSourceId() {
+    if (!showPlatformFilter) return platformIds.contains('all') ? 'all' : _firstRealPlatform;
+    return platformIds.contains(searchSource) ? searchSource : _firstRealPlatform;
+  }
+
+  /// Songlists and leaderboards only exist per platform, so `all` is never a
+  /// valid answer and the first kept platform takes over when needed.
+  String songlistSourceId() => _realPlatform(songlistSource);
+  String leaderboardSourceId() => _realPlatform(leaderboardSource);
+
+  String _realPlatform(String stored) {
+    final usable = stored.isNotEmpty && stored != 'all';
+    if (showPlatformFilter) {
+      return usable && platformIds.contains(stored) ? stored : _firstRealPlatform;
+    }
+    return usable && kPlatformIds.contains(stored) ? stored : _firstRealPlatform;
+  }
 
   Song? get lastSong {
     final json = lastSongJson;
@@ -138,6 +196,11 @@ class AppSettings {
       miniPlayerX: (json['miniPlayerX'] as num?)?.toDouble() ?? -1,
       miniPlayerY: (json['miniPlayerY'] as num?)?.toDouble() ?? -1,
       debugEnabled: json['debugEnabled'] == true,
+      showPlatformFilter: json['showPlatformFilter'] != false,
+      visibleSources: (json['visibleSources'] as List<dynamic>? ?? <dynamic>[])
+          .map((item) => '$item')
+          .where(kPlatformIds.contains)
+          .toList(),
     );
   }
 
@@ -163,5 +226,7 @@ class AppSettings {
         'miniPlayerX': miniPlayerX,
         'miniPlayerY': miniPlayerY,
         'debugEnabled': debugEnabled,
+        'showPlatformFilter': showPlatformFilter,
+        'visibleSources': visibleSources,
       };
 }

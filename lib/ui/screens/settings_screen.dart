@@ -12,6 +12,7 @@ import '../../state/library_state.dart';
 import '../../state/player_state.dart';
 import '../../state/source_state.dart';
 import '../kit.dart';
+import '../widgets/source_chips.dart';
 import 'custom_sources_screen.dart';
 import 'debug_screen.dart';
 
@@ -68,6 +69,27 @@ class SettingsScreen extends StatelessWidget {
                               ],
                               onSelected: (value) => appState.setThemeMode(value),
                             ),
+                          ),
+                        ],
+                      ),
+                      const SectionHead(title: '音乐平台'),
+                      _Group(
+                        children: <Widget>[
+                          _SwitchRow(
+                            icon: CupertinoIcons.line_horizontal_3_decrease,
+                            label: '显示平台筛选',
+                            caption: '搜索、歌单和榜单顶部的平台切换条；关闭后搜索改用聚合源',
+                            value: settings.showPlatformFilter,
+                            onChanged: (value) {
+                              appState.update((item) => item.showPlatformFilter = value);
+                            },
+                          ),
+                          _SettingRow(
+                            icon: CupertinoIcons.square_grid_2x2,
+                            label: '平台分类',
+                            value: _platformSummary(settings),
+                            caption: '只留你真正会用的平台，只剩一个时切换条自动隐藏',
+                            onTap: () => _pickPlatforms(context, appState),
                           ),
                         ],
                       ),
@@ -280,6 +302,65 @@ class SettingsScreen extends StatelessWidget {
     if (state.loading) return '${active.name} · 初始化中…';
     if (state.error != null) return '${active.name} · ${state.error}';
     return '${active.name} · 已启用';
+  }
+
+  String _platformSummary(AppSettings settings) {
+    final ids = settings.platformIds;
+    if (ids.length == AppSettings.kPlatformIds.length) return '全部平台';
+    final names = ids.map((id) {
+      final match = kSourceOptions.where((option) => option['id'] == id);
+      return match.isEmpty ? id : match.first['name'] ?? id;
+    }).join('、');
+    return '${ids.length} 项 · $names';
+  }
+
+  Future<void> _pickPlatforms(BuildContext context, AppState appState) async {
+    final selected = appState.settings.platformIds.toSet();
+    await showFlmSheet<void>(
+      context,
+      title: '平台分类',
+      child: StatefulBuilder(
+        builder: (sheetContext, rebuildSheet) {
+          return SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(14, 0, 14, 8),
+                  child: Text(
+                    '至少保留一个平台。取消勾选后，对应的切换条不会再出现，被隐藏的旧选择会自动改用剩下的平台。',
+                    style: TextStyle(fontSize: 11.5, height: 1.5, color: mutedFor(context)),
+                  ),
+                ),
+                ...kSourceOptions.map((option) {
+                  final id = option['id'] ?? '';
+                  final active = selected.contains(id);
+                  return OptionRow(
+                    label: option['name'] ?? id,
+                    active: active,
+                    onTap: () {
+                      if (active) {
+                        if (selected.length <= 1) {
+                          flmToast(context, '至少保留一个平台');
+                          return;
+                        }
+                        selected.remove(id);
+                      } else {
+                        selected.add(id);
+                      }
+                      appState.update((item) => item.visibleSources =
+                          AppSettings.kPlatformIds.where(selected.contains).toList());
+                      rebuildSheet(() {});
+                    },
+                  );
+                }),
+                const SizedBox(height: 8),
+              ],
+            ),
+          );
+        },
+      ),
+    );
   }
 
   Future<void> _pickOption(

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import '../core/parsing.dart';
@@ -9,8 +11,12 @@ class DiscoverState extends ChangeNotifier {
   DiscoverState({
     required this.engine,
     required this.appState,
-  })  : songlistSource = appState.settings.songlistSource,
-        leaderboardSource = appState.settings.leaderboardSource;
+  })  : songlistSource = appState.settings.songlistSourceId(),
+        leaderboardSource = appState.settings.leaderboardSourceId() {
+    // 设置 → 音乐平台 decides which platforms stay as categories; reload the
+    // affected lists when that changes under us.
+    appState.addListener(_onSettingsChanged);
+  }
 
   final OnlineEngine engine;
   final AppState appState;
@@ -42,6 +48,34 @@ class DiscoverState extends ChangeNotifier {
     await _loadSortsAndTags();
     await loadSonglists();
     await loadBoards();
+  }
+
+  void _onSettingsChanged() {
+    if (!_inited) return;
+    var changed = false;
+    final list = appState.settings.songlistSourceId();
+    if (list != songlistSource) {
+      songlistSource = list;
+      sortId = '';
+      tagId = '';
+      tagName = '';
+      songlists = <Map<String, dynamic>>[];
+      changed = true;
+      unawaited(_loadSortsAndTags().then((_) => loadSonglists()));
+    }
+    final board = appState.settings.leaderboardSourceId();
+    if (board != leaderboardSource) {
+      leaderboardSource = board;
+      changed = true;
+      unawaited(loadBoards());
+    }
+    if (changed) notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    appState.removeListener(_onSettingsChanged);
+    super.dispose();
   }
 
   Future<void> _loadSortsAndTags() async {

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/theme.dart';
+import '../../state/app_state.dart';
 import '../../state/discover_state.dart';
 import '../kit.dart';
 import '../root_shell.dart' show kRootChromeSpace;
@@ -16,6 +17,7 @@ class LeaderboardTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final discover = context.watch<DiscoverState>();
+    final settings = context.watch<AppState>().settings;
     final top = MediaQuery.paddingOf(context).top + 10;
 
     void openBoard(Map<String, dynamic> board) {
@@ -52,7 +54,8 @@ class LeaderboardTab extends StatelessWidget {
           SliverToBoxAdapter(
             child: SourceChips(
               value: discover.leaderboardSource,
-              options: kSourceOptions.where((item) => item['id'] != 'all').toList(),
+              settings: settings,
+              allowAggregate: false,
               onChanged: (value) {
                 discover.setLeaderboardSource(value);
               },

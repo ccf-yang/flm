@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/theme.dart';
+import '../../state/app_state.dart';
 import '../../state/discover_state.dart';
 import '../kit.dart';
 import '../root_shell.dart' show kRootChromeSpace;
@@ -58,6 +59,7 @@ class _DiscoverTabState extends State<DiscoverTab> {
   @override
   Widget build(BuildContext context) {
     final discover = context.watch<DiscoverState>();
+    final settings = context.watch<AppState>().settings;
     final top = MediaQuery.paddingOf(context).top + 10;
 
     return Scaffold(
@@ -82,7 +84,8 @@ class _DiscoverTabState extends State<DiscoverTab> {
           SliverToBoxAdapter(
             child: SourceChips(
               value: discover.songlistSource,
-              options: kSourceOptions.where((item) => item['id'] != 'all').toList(),
+              settings: settings,
+              allowAggregate: false,
               onChanged: (value) {
                 discover.setSonglistSource(value);
               },
