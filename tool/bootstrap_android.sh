@@ -56,10 +56,12 @@ printf '\n# Added by tool/bootstrap_android.sh: see the comment above.\nkotlin.j
 # that comes with this Flutter SDK is built against 36, so AGP aborts in
 # :file_picker:checkReleaseAarMetadata. Those sources live in the pub cache and
 # must not be edited, so the override happens in the root Gradle script, for the
-# plugin modules only (never :app). As a fallback for the case where AGP has
-# already read compileSdk by the time this runs, the same modules skip their
-# check*AarMetadata tasks -- only the checks: write*AarMetadata still has to run,
-# because :app:checkReleaseAarMetadata reads the file those tasks produce.
+# plugin modules only (never :app). It has to run in afterEvaluate, where this
+# hook fires before AGP's own afterEvaluate creates the variants.
+#
+# Do not "just disable" check*AarMetadata as a shortcut: bundleReleaseLocalLintAar
+# declares that task's output directory as an input, and Gradle 9 fails validation
+# when a disabled producer leaves the directory missing.
 echo "==> raising plugin compileSdk to 36"
 cat >> "$ROOT/android/build.gradle.kts" <<'GRADLE'
 
@@ -79,16 +81,19 @@ subprojects {
                 }
                 try {
                     when {
-                        intSetter != null -> intSetter.invoke(module, 36)
-                        stringSetter != null -> stringSetter.invoke(module, "android-36")
-                        else -> logger.info("flm: no compileSdk setter on " + module.javaClass.name)
+                        intSetter != null -> {
+                            intSetter.invoke(module, 36)
+                            println("flm: " + path + " compileSdk raised to 36")
+                        }
+                        stringSetter != null -> {
+                            stringSetter.invoke(module, "android-36")
+                            println("flm: " + path + " compileSdk raised to android-36")
+                        }
+                        else -> println("flm: " + path + " exposes no compileSdk setter")
                     }
                 } catch (error: Exception) {
-                    logger.warn("flm: could not raise compileSdk: " + (error.message ?: error.toString()))
+                    println("flm: " + path + " could not raise compileSdk: " + (error.message ?: error.toString()))
                 }
-            }
-            tasks.configureEach {
-                if (name.startsWith("check") && name.endsWith("AarMetadata")) enabled = false
             }
         }
     }
