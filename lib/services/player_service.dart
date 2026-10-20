@@ -161,8 +161,15 @@ class FlmPlayerService {
   /// stay on "正在获取播放链接…" forever and never reached the post-load work
   /// (lyrics, queue persistence, preloading the next song).
   void _start() {
-    unawaited(_player.play().catchError((Object _) {}));
+    _player.play().catchError((Object error) {
+      // Failures that only appear once the stream is being read (expired link
+      // answering 403, a body that is not audio) used to throw into the awaited
+      // play call and trigger 换源; hand them to the controller instead.
+      onPlayError?.call('$error');
+    });
   }
+
+  void Function(String error)? onPlayError;
 
   Future<void> play() async => _start();
 

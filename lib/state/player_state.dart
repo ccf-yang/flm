@@ -68,6 +68,14 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     service.onSkipNext = () => next();
     service.onSkipPrevious = () => previous();
     service.onCompleted = _handleCompleted;
+    service.onPlayError = (message) {
+      debugLog?.record('播放器报错 ${_current?.name}', <String, Object?>{
+        '错误': message,
+        '前台': _appInForeground,
+        '在加载': _loading,
+      });
+      unawaited(_handlePlayerError(message));
+    };
     service.onExternalPause = () {
       // A pause from the lock screen / control centre is deliberate: never
       // auto-restart it when the app comes back, not even if an audio
@@ -120,6 +128,8 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   /// True once the resolved URL has been given to the native player, i.e. the
   /// only thing left is buffering/audio, not link fetching.
   bool _handedOff = false;
+  /// How many times a mid-stream player error was retried for the current song.
+  int _playErrorAttempts = 0;
   final Map<String, _CachedUrl> _urlCache = <String, _CachedUrl>{};
   final Set<String> _preloading = <String>{};
   DateTime _lastPreloadAttempt = DateTime.fromMillisecondsSinceEpoch(0);
@@ -269,6 +279,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     _activeLine = -1;
     _errorText = null;
     _userPaused = false;
+    _playErrorAttempts = 0;
     _statusText = '正在准备播放…';
     _notify();
     await _loadAndPlay(song);
@@ -486,6 +497,26 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
         _preloading.remove(key);
       }
     }
+  }
+
+  /// A link can fail only once the player starts reading its stream (an expired
+  /// token answering 403, a body that turns out not to be audio). `play()` is no
+  /// longer awaited, so those errors arrive here; reuse the normal load path so
+  /// retry / 换源 / 自动跳歌 still apply, bounded so a permanently dead link cannot
+  /// loop.
+  Future<void> _handlePlayerError(String message) async {
+    if (_disposed) return;
+    final song = _current;
+    if (song == null || song.isLocal || _loading || _userPaused) return;
+    if (_playErrorAttempts >= 2) return;
+    _playErrorAttempts++;
+    debugLog?.record('播放器报错处理 ${song.name}', <String, Object?>{
+      '错误': message,
+      '第几次补救': _playErrorAttempts,
+      '前台': _appInForeground,
+    });
+    _urlCache.remove(_songKey(song));
+    await _loadAndPlay(song, initialPosition: _position);
   }
 
   /// iOS surfaces failed media links as bare AVFoundation/NSURLError codes,
@@ -1025,6 +1056,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     service.onSkipPrevious = null;
     service.onCompleted = null;
     service.onExternalPause = null;
+    service.onPlayError = null;
     super.dispose();
   }
 }
