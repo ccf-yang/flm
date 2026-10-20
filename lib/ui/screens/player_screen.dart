@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui' show ImageFilter;
 
@@ -10,12 +11,13 @@ import '../../core/formatters.dart';
 import '../../core/theme.dart';
 import '../../models/app_settings.dart';
 import '../../models/song.dart';
+import '../../state/app_state.dart';
 import '../../state/library_state.dart';
 import '../../state/player_state.dart';
 import '../kit.dart';
 import '../widgets/cover_art.dart';
-import '../widgets/empty_state.dart';
 import '../widgets/lyric_view.dart';
+import '../widgets/queue_sheet.dart';
 import '../widgets/song_actions_sheet.dart';
 import '../widgets/song_tile.dart' show srcShortLabel;
 
@@ -43,6 +45,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
   void dispose() {
     _pageController.dispose();
     super.dispose();
+  }
+
+  void _goPage(int page) {
+    if (page == _page || !_pageController.hasClients) return;
+    _pageController.animateToPage(
+      page,
+      duration: const Duration(milliseconds: 320),
+      curve: Curves.easeOutCubic,
+    );
   }
 
   void _onVerticalDragStart(DragStartDetails details) {
@@ -81,6 +92,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
       140.0,
       media.size.height - media.padding.top - media.padding.bottom - 250,
     );
+
+    final loved = song == null ? false : library.isLoved(song);
+    void onFavorite() {
+      if (song == null) return;
+      final nowLoved = library.toggleLove(song);
+      flmToast(context, nowLoved ? '已收藏到「我喜欢」' : '已取消收藏');
+    }
 
     return Scaffold(
       backgroundColor: const Color(0xFF06080A),
@@ -167,45 +185,46 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 onVerticalDragEnd: _onVerticalDragEnd,
                 onVerticalDragCancel: _onVerticalDragCancel,
                 child: Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 6, 20, 6),
+                  padding: const EdgeInsets.fromLTRB(20, 4, 20, 6),
                   child: Column(
                     children: <Widget>[
-                      _PlayerTop(player: player, song: song),
+                      _PlayerTop(
+                        player: player,
+                        song: song,
+                        onOpenQueue: () => showPlayQueueSheet(context),
+                      ),
+                      // No page dots: the cover and the lyrics swap with a
+                      // horizontal swipe, and tapping the artwork (or the mini
+                      // strip on the lyric page) switches the other way.
                       Expanded(
                         child: PageView(
                           controller: _pageController,
                           onPageChanged: (value) => setState(() => _page = value),
                           children: <Widget>[
-                            _CoverPage(player: player, song: song),
-                            LyricView(
-                              lines: player.lyrics,
-                              activeLine: player.activeLine,
-                              onSeek: player.seek,
+                            _CoverPage(
+                              player: player,
+                              song: song,
+                              loved: loved,
+                              onFavorite: onFavorite,
+                              onOpenLyrics: () => _goPage(1),
+                            ),
+                            _LyricPage(
+                              player: player,
+                              song: song,
+                              loved: loved,
+                              onFavorite: onFavorite,
+                              onOpenCover: () => _goPage(0),
                             ),
                           ],
                         ),
                       ),
-                      const SizedBox(height: 2),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: <Widget>[
-                          _pageDot(0),
-                          const SizedBox(width: 2),
-                          _pageDot(1),
-                        ],
-                      ),
-                      _TrackInfo(song: song),
                       _SeekBar(player: player),
                       _Controls(
                         player: player,
-                        loved: library.isLoved(song),
-                        onFavorite: () {
-                          final loved = library.toggleLove(song);
-                          flmToast(context, loved ? '已收藏到「我喜欢」' : '已取消收藏');
-                        },
+                        onOpenSettings: () => _showPlaybackSheet(context, song),
                       ),
-                      const SizedBox(height: 2),
-                      _BottomBar(player: player, song: song),
+                      const SizedBox(height: 4),
+                      _UpNextBar(player: player),
                     ],
                   ),
                 ),
@@ -249,8 +268,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   Widget _swipeHint() {
-    final progress =
-        (-_swipeDy / _swipeTrigger).clamp(0.0, 1.0).toDouble();
+    final progress = (-_swipeDy / _swipeTrigger).clamp(0.0, 1.0).toDouble();
     return IgnorePointer(
       child: Opacity(
         opacity: progress,
@@ -289,57 +307,28 @@ class _PlayerScreenState extends State<PlayerScreen> {
       ),
     );
   }
-
-  Widget _pageDot(int index) {
-    final active = index == _page;
-    return SizedBox(
-      width: 32,
-      height: 30,
-      child: Center(
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: () {
-            _pageController.animateToPage(
-              index,
-              duration: const Duration(milliseconds: 320),
-              curve: Curves.easeOutCubic,
-            );
-          },
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 280),
-            curve: AuroraMotion.ease,
-            width: active ? 20 : 7,
-            height: 7,
-            decoration: BoxDecoration(
-              color: active ? AppColors.accentDark : const Color(0x3DFFFFFF),
-              borderRadius: BorderRadius.circular(999),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
 }
 
+// ---------- Top bar ----------
+
 class _PlayerTop extends StatelessWidget {
-  const _PlayerTop({required this.player, required this.song});
+  const _PlayerTop({
+    required this.player,
+    required this.song,
+    required this.onOpenQueue,
+  });
 
   final PlayerController player;
   final Song song;
+  final VoidCallback onOpenQueue;
 
   @override
   Widget build(BuildContext context) {
-    final appState = player.appState;
-    final quality = appState.settings.quality;
-    final qualityLabel = switch (quality) {
-      '128k' => '标准',
-      '320k' => '高清',
-      'flac' => '无损',
-      _ => quality,
-    };
+    final quality = _qualityLabel(player.appState.settings.quality);
+    final sleep = player.sleepRemaining;
 
     return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.only(bottom: 2),
       child: Row(
         children: <Widget>[
           _GlassIconBtn(
@@ -372,12 +361,20 @@ class _PlayerTop extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(width: 5),
-                    Text(
-                      '${srcShortLabel(song.source)} · $qualityLabel',
-                      style: const TextStyle(
-                        fontSize: 9,
-                        fontWeight: FontWeight.w600,
-                        color: Color(0x8CFFFFFF),
+                    Flexible(
+                      child: Text(
+                        sleep == null
+                            ? '${srcShortLabel(song.source)} · $quality'
+                            : '${srcShortLabel(song.source)} · $quality · 定时 ${formatDuration(sleep)}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 9,
+                          fontWeight: FontWeight.w600,
+                          color: sleep == null
+                              ? const Color(0x8CFFFFFF)
+                              : const Color(0xCCF2D08C),
+                        ),
                       ),
                     ),
                   ],
@@ -385,12 +382,68 @@ class _PlayerTop extends StatelessWidget {
               ],
             ),
           ),
-          _GlassIconBtn(
-            icon: CupertinoIcons.slider_horizontal_3,
-            onTap: () => _showPlaybackSheet(context),
-            tooltip: '播放设置',
+          // The only control in the top-right corner, and it is unmistakably the
+          // queue: the count is written next to the word, not as a badge.
+          _QueuePill(
+            count: player.queue.length,
+            onTap: onOpenQueue,
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _QueuePill extends StatelessWidget {
+  const _QueuePill({required this.count, required this.onTap});
+
+  final int count;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Pressable(
+      onTap: onTap,
+      child: Container(
+        height: 34,
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        decoration: BoxDecoration(
+          color: const Color(0x14FFFFFF),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: const Color(0x24FFFFFF)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            const Icon(
+              CupertinoIcons.list_bullet,
+              size: 13,
+              color: Color(0xCCFFFFFF),
+            ),
+            const SizedBox(width: 6),
+            const Text(
+              '队列',
+              style: TextStyle(
+                fontSize: 11.5,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.3,
+                color: Color(0xE8FFFFFF),
+              ),
+            ),
+            if (count > 1) ...<Widget>[
+              const SizedBox(width: 5),
+              Text(
+                '$count',
+                style: const TextStyle(
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w800,
+                  color: AppColors.accentDark,
+                  fontFeatures: <FontFeature>[FontFeature.tabularFigures()],
+                ),
+              ),
+            ],
+          ],
+        ),
       ),
     );
   }
@@ -412,14 +465,14 @@ class _GlassIconBtn extends StatelessWidget {
     final button = Pressable(
       onTap: onTap,
       child: Container(
-        width: 46,
-        height: 46,
+        width: 44,
+        height: 40,
         decoration: BoxDecoration(
           color: const Color(0x12FFFFFF),
-          borderRadius: BorderRadius.circular(15),
+          borderRadius: BorderRadius.circular(14),
           border: Border.all(color: const Color(0x1FFFFFFF)),
         ),
-        child: Icon(icon, size: 20, color: const Color(0xD1FFFFFF)),
+        child: Icon(icon, size: 19, color: const Color(0xD1FFFFFF)),
       ),
     );
     if (tooltip == null) return button;
@@ -427,138 +480,269 @@ class _GlassIconBtn extends StatelessWidget {
   }
 }
 
+// ---------- Pages ----------
+
 class _CoverPage extends StatelessWidget {
-  const _CoverPage({required this.player, required this.song});
+  const _CoverPage({
+    required this.player,
+    required this.song,
+    required this.loved,
+    required this.onFavorite,
+    required this.onOpenLyrics,
+  });
 
   final PlayerController player;
   final Song song;
+  final bool loved;
+  final VoidCallback onFavorite;
+  final VoidCallback onOpenLyrics;
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final size = math.min(constraints.maxWidth * 0.88, constraints.maxHeight * 0.80);
-        return Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            AnimatedScale(
-              duration: const Duration(milliseconds: 520),
-              curve: AuroraMotion.ease,
-              scale: player.isPlaying ? 1 : 0.93,
-              child: Container(
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(30),
-                  boxShadow: const <BoxShadow>[
-                    BoxShadow(
-                      color: Color(0x7A000000),
-                      blurRadius: 80,
-                      offset: Offset(0, 44),
-                    ),
-                  ],
-                ),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(30),
-                  child: Stack(
-                    children: <Widget>[
-                      CoverArt(song: song, size: size, radius: 30, showMark: true),
-                      Positioned.fill(
-                        child: IgnorePointer(
-                          child: DecoratedBox(
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(30),
-                              gradient: const LinearGradient(
-                                begin: Alignment.topLeft,
-                                end: Alignment.bottomRight,
-                                colors: <Color>[
-                                  Color(0x22FFFFFF),
-                                  Color(0x00FFFFFF),
-                                  Color(0x0DFFFFFF),
-                                ],
-                                stops: <double>[0, 0.45, 0.72],
+    return Column(
+      children: <Widget>[
+        Expanded(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final size = math.min(
+                constraints.maxWidth * 0.92,
+                constraints.maxHeight * 0.90,
+              );
+              return Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: <Widget>[
+                    // Tap the artwork to read the lyrics — the swipe stays the
+                    // primary path, this is just the discoverable one.
+                    Pressable(
+                      onTap: onOpenLyrics,
+                      child: AnimatedScale(
+                        duration: const Duration(milliseconds: 520),
+                        curve: AuroraMotion.ease,
+                        scale: player.isPlaying ? 1 : 0.93,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(30),
+                            boxShadow: const <BoxShadow>[
+                              BoxShadow(
+                                color: Color(0x7A000000),
+                                blurRadius: 80,
+                                offset: Offset(0, 44),
                               ),
+                            ],
+                          ),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(30),
+                            child: Stack(
+                              children: <Widget>[
+                                CoverArt(
+                                  song: song,
+                                  size: size,
+                                  radius: 30,
+                                  showMark: true,
+                                ),
+                                Positioned.fill(
+                                  child: IgnorePointer(
+                                    child: DecoratedBox(
+                                      decoration: BoxDecoration(
+                                        borderRadius: BorderRadius.circular(30),
+                                        gradient: const LinearGradient(
+                                          begin: Alignment.topLeft,
+                                          end: Alignment.bottomRight,
+                                          colors: <Color>[
+                                            Color(0x22FFFFFF),
+                                            Color(0x00FFFFFF),
+                                            Color(0x0DFFFFFF),
+                                          ],
+                                          stops: <double>[0, 0.45, 0.72],
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
                         ),
                       ),
+                    ),
+                    if (player.errorText != null) ...<Widget>[
+                      const SizedBox(height: 14),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 7,
+                        ),
+                        decoration: BoxDecoration(
+                          color: const Color(0x1CFF8F7A),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: const Color(0x2EFF8F7A)),
+                        ),
+                        child: Text(
+                          player.errorText!,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: Color(0xFFF0A99B),
+                          ),
+                        ),
+                      ),
                     ],
-                  ),
+                    if (player.loading && player.errorText == null) ...<Widget>[
+                      const SizedBox(height: 12),
+                      const Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: <Widget>[
+                          SizedBox(
+                            width: 12,
+                            height: 12,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 1.7,
+                              color: AppColors.accentDark,
+                            ),
+                          ),
+                          SizedBox(width: 8),
+                          Text(
+                            '正在获取播放链接…',
+                            style: TextStyle(
+                              fontSize: 10,
+                              color: Color(0x8CFFFFFF),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ],
                 ),
-              ),
-            ),
-            if (player.errorText != null) ...<Widget>[
-              const SizedBox(height: 16),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-                decoration: BoxDecoration(
-                  color: const Color(0x1CFF8F7A),
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: const Color(0x2EFF8F7A)),
-                ),
-                child: Text(
-                  player.errorText!,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(fontSize: 11.5, color: Color(0xFFF0A99B)),
-                ),
-              ),
-            ],
-            if (player.loading && player.errorText == null) ...<Widget>[
-              const SizedBox(height: 16),
-              const Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: <Widget>[
-                  SizedBox(
-                    width: 13,
-                    height: 13,
-                    child: CircularProgressIndicator(strokeWidth: 1.8, color: AppColors.accentDark),
-                  ),
-                  SizedBox(width: 8),
-                  Text(
-                    '正在获取播放链接…',
-                    style: TextStyle(fontSize: 11, color: Color(0x8CFFFFFF)),
-                  ),
-                ],
-              ),
-            ],
-          ],
-        );
-      },
+              );
+            },
+          ),
+        ),
+        _TitleRow(
+          song: song,
+          loved: loved,
+          onFavorite: onFavorite,
+          onMore: () => _showPlaybackSheet(context, song),
+          onOpenLyrics: onOpenLyrics,
+        ),
+      ],
     );
   }
 }
 
-class _TrackInfo extends StatelessWidget {
-  const _TrackInfo({required this.song});
+class _LyricPage extends StatelessWidget {
+  const _LyricPage({
+    required this.player,
+    required this.song,
+    required this.loved,
+    required this.onFavorite,
+    required this.onOpenCover,
+  });
 
+  final PlayerController player;
   final Song song;
+  final bool loved;
+  final VoidCallback onFavorite;
+  final VoidCallback onOpenCover;
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(top: 2),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+    return Column(
+      children: <Widget>[
+        _MiniStrip(
+          song: song,
+          loved: loved,
+          onFavorite: onFavorite,
+          onOpenCover: onOpenCover,
+        ),
+        const SizedBox(height: 4),
+        Expanded(
+          child: LyricView(
+            lines: player.lyrics,
+            activeLine: player.activeLine,
+            onSeek: player.seek,
+          ),
+        ),
+        // Keeps the lyric column the same height as the cover page, so the
+        // seek bar below does not move when the pages swap.
+        const SizedBox(height: 50),
+      ],
+    );
+  }
+}
+
+/// Title, artist, favourite and the entry to playback settings — all on one
+/// line, right under the artwork. The heart is a frequent action and does not
+/// belong buried in the transport row.
+class _TitleRow extends StatelessWidget {
+  const _TitleRow({
+    required this.song,
+    required this.loved,
+    required this.onFavorite,
+    required this.onMore,
+    required this.onOpenLyrics,
+  });
+
+  final Song song;
+  final bool loved;
+  final VoidCallback onFavorite;
+  final VoidCallback onMore;
+  final VoidCallback onOpenLyrics;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 50,
+      child: Row(
         children: <Widget>[
-          Text(
-            song.displayTitle,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
-              fontSize: 22,
-              height: 1.2,
-              fontWeight: FontWeight.w700,
-              letterSpacing: -0.84,
-              color: Colors.white,
+          Expanded(
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: onOpenLyrics,
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text(
+                    song.displayTitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 21,
+                      height: 1.2,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: -0.84,
+                      color: Colors.white,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    song.subtitle.isEmpty ? song.displaySinger : song.subtitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 11.5,
+                      color: Color(0x7AFFFFFF),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
-          const SizedBox(height: 5),
-          Text(
-            song.subtitle.isEmpty ? song.displaySinger : song.subtitle,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
-              fontSize: 11.5,
-              color: Color(0x7AFFFFFF),
-            ),
+          _IconDot(
+            icon: loved ? CupertinoIcons.heart_fill : CupertinoIcons.heart,
+            color: loved ? const Color(0xFFFF8F7A) : const Color(0xA6FFFFFF),
+            size: 22,
+            onTap: onFavorite,
+            tooltip: loved ? '取消收藏' : '收藏',
+          ),
+          const SizedBox(width: 2),
+          _IconDot(
+            icon: CupertinoIcons.ellipsis,
+            color: const Color(0xA6FFFFFF),
+            size: 21,
+            onTap: onMore,
+            tooltip: '播放设置',
           ),
         ],
       ),
@@ -566,23 +750,179 @@ class _TrackInfo extends StatelessWidget {
   }
 }
 
-class _SeekBar extends StatelessWidget {
+class _MiniStrip extends StatelessWidget {
+  const _MiniStrip({
+    required this.song,
+    required this.loved,
+    required this.onFavorite,
+    required this.onOpenCover,
+  });
+
+  final Song song;
+  final bool loved;
+  final VoidCallback onFavorite;
+  final VoidCallback onOpenCover;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 62,
+      child: Row(
+        children: <Widget>[
+          Pressable(
+            onTap: onOpenCover,
+            child: Row(
+              children: <Widget>[
+                CoverArt(song: song, size: 52, radius: 14, showMark: false),
+                const SizedBox(width: 11),
+                SizedBox(
+                  width: math.max(120.0, MediaQuery.sizeOf(context).width * 0.42),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Text(
+                        song.displayTitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 15,
+                          height: 1.25,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: -0.5,
+                          color: Colors.white,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        song.subtitle.isEmpty
+                            ? song.displaySinger
+                            : song.subtitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 10.5,
+                          color: Color(0x73FFFFFF),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const Spacer(),
+          _IconDot(
+            icon: loved ? CupertinoIcons.heart_fill : CupertinoIcons.heart,
+            color: loved ? const Color(0xFFFF8F7A) : const Color(0xA6FFFFFF),
+            size: 20,
+            onTap: onFavorite,
+            tooltip: loved ? '取消收藏' : '收藏',
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _IconDot extends StatelessWidget {
+  const _IconDot({
+    required this.icon,
+    required this.color,
+    required this.size,
+    required this.onTap,
+    this.tooltip,
+  });
+
+  final IconData icon;
+  final Color color;
+  final double size;
+  final VoidCallback onTap;
+  final String? tooltip;
+
+  @override
+  Widget build(BuildContext context) {
+    final button = Pressable(
+      onTap: onTap,
+      child: SizedBox(
+        width: 42,
+        height: 42,
+        child: Icon(icon, size: size, color: color),
+      ),
+    );
+    if (tooltip == null) return button;
+    return Tooltip(message: tooltip!, child: button);
+  }
+}
+
+// ---------- Seek + transport ----------
+
+class _SeekBar extends StatefulWidget {
   const _SeekBar({required this.player});
 
   final PlayerController player;
 
   @override
+  State<_SeekBar> createState() => _SeekBarState();
+}
+
+class _SeekBarState extends State<_SeekBar>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _breath = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1200),
+  );
+
+  @override
+  void didUpdateWidget(covariant _SeekBar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _syncBreath();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _syncBreath();
+  }
+
+  /// While a link is being fetched the track gently breathes instead of showing
+  // a buffered segment — there is no buffered position to draw, and the play
+  // state machine stays untouched.
+  void _syncBreath() {
+    if (widget.player.loading) {
+      if (!_breath.isAnimating) _breath.repeat(reverse: true);
+    } else if (_breath.isAnimating) {
+      _breath.stop();
+      _breath.value = 1;
+    }
+  }
+
+  @override
+  void dispose() {
+    _breath.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final player = widget.player;
     final maxMs = player.duration.inMilliseconds;
     final value = maxMs <= 0
         ? 0.0
         : (player.position.inMilliseconds / maxMs).clamp(0.0, 1.0).toDouble();
+    final remaining = maxMs <= 0
+        ? Duration.zero
+        : player.duration - player.position;
 
-    return Padding(
-      padding: const EdgeInsets.only(top: 10),
-      child: Column(
-        children: <Widget>[
-          SliderTheme(
+    return Column(
+      children: <Widget>[
+        AnimatedBuilder(
+          animation: _breath,
+          builder: (context, child) => Opacity(
+            opacity: player.loading ? 0.62 + 0.38 * _breath.value : 1,
+            child: child,
+          ),
+          child: SliderTheme(
             data: const SliderThemeData(
               trackHeight: 4,
               activeTrackColor: AppColors.accentDark,
@@ -601,32 +941,36 @@ class _SeekBar extends StatelessWidget {
                       player.seek(Duration(milliseconds: (next * maxMs).round())),
             ),
           ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: <Widget>[
-                Text(
-                  formatDuration(player.position),
-                  style: const TextStyle(
-                    fontSize: 10.5,
-                    fontWeight: FontWeight.w500,
-                    color: Color(0x70FFFFFF),
-                  ),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: <Widget>[
+              Text(
+                formatDuration(player.position),
+                style: const TextStyle(
+                  fontSize: 10.5,
+                  fontWeight: FontWeight.w500,
+                  color: Color(0x70FFFFFF),
+                  fontFeatures: <FontFeature>[FontFeature.tabularFigures()],
                 ),
-                Text(
-                  formatDuration(player.duration),
-                  style: const TextStyle(
-                    fontSize: 10.5,
-                    fontWeight: FontWeight.w500,
-                    color: Color(0x70FFFFFF),
-                  ),
+              ),
+              Text(
+                // Remaining time, because "how long is this song" is the
+                // question the number under the bar actually answers.
+                maxMs <= 0 ? '--:--' : '-${formatDuration(remaining)}',
+                style: const TextStyle(
+                  fontSize: 10.5,
+                  fontWeight: FontWeight.w500,
+                  color: Color(0x70FFFFFF),
+                  fontFeatures: <FontFeature>[FontFeature.tabularFigures()],
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }
@@ -634,13 +978,11 @@ class _SeekBar extends StatelessWidget {
 class _Controls extends StatelessWidget {
   const _Controls({
     required this.player,
-    required this.loved,
-    required this.onFavorite,
+    required this.onOpenSettings,
   });
 
   final PlayerController player;
-  final bool loved;
-  final VoidCallback onFavorite;
+  final VoidCallback onOpenSettings;
 
   static IconData _modeIcon(PlayMode mode) {
     switch (mode) {
@@ -655,12 +997,33 @@ class _Controls extends StatelessWidget {
     }
   }
 
+  void _nudgeVolume(BuildContext context) {
+    final current = player.appState.settings.volume;
+    final next = (current - 0.05).clamp(0.0, 1.0).toDouble();
+    player.setVolume(next);
+    flmToast(context, '音量 ${(next * 100).round()}%');
+  }
+
+  void _fastForward(BuildContext context) {
+    final maxMs = player.duration.inMilliseconds;
+    if (maxMs <= 0) return;
+    final target = math.min(
+      player.position.inMilliseconds + 15000,
+      maxMs - 1000,
+    );
+    player.seek(Duration(milliseconds: target));
+    flmToast(context, '快进 15 秒');
+  }
+
   @override
   Widget build(BuildContext context) {
+    final speed = player.appState.settings.speed;
+    final offSpeed = (speed - 1.0).abs() > 0.001;
+
     return Padding(
-      padding: const EdgeInsets.only(top: 4),
+      padding: const EdgeInsets.only(top: 2, bottom: 2),
       child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: <Widget>[
           _Ctrl(
             icon: _modeIcon(player.playMode),
@@ -671,18 +1034,21 @@ class _Controls extends StatelessWidget {
               flmToast(context, '播放模式：${next.label}');
             },
           ),
+          // Long-press keeps the two fine adjustments that used to live on the
+          // removed toolbar without adding a sixth button.
           _Ctrl(
             icon: CupertinoIcons.backward_fill,
             size: 56,
-            iconSize: 27,
+            iconSize: 26,
             bright: true,
             onTap: player.previous,
+            onLongPress: () => _nudgeVolume(context),
           ),
           Pressable(
             onTap: player.togglePlay,
             child: Container(
-              width: 76,
-              height: 76,
+              width: 72,
+              height: 72,
               decoration: const BoxDecoration(
                 shape: BoxShape.circle,
                 gradient: LinearGradient(
@@ -700,7 +1066,7 @@ class _Controls extends StatelessWidget {
               ),
               child: player.loading
                   ? const Padding(
-                      padding: EdgeInsets.all(23),
+                      padding: EdgeInsets.all(22),
                       child: CircularProgressIndicator(
                         strokeWidth: 2.4,
                         color: Color(0xFF06241B),
@@ -710,7 +1076,7 @@ class _Controls extends StatelessWidget {
                       player.willPlay
                           ? CupertinoIcons.pause_fill
                           : CupertinoIcons.play_fill,
-                      size: 31,
+                      size: 29,
                       color: const Color(0xFF06241B),
                     ),
             ),
@@ -718,16 +1084,36 @@ class _Controls extends StatelessWidget {
           _Ctrl(
             icon: CupertinoIcons.forward_fill,
             size: 56,
-            iconSize: 27,
+            iconSize: 26,
             bright: true,
             onTap: player.next,
+            onLongPress: () => _fastForward(context),
           ),
-          _Ctrl(
-            icon: loved ? CupertinoIcons.heart_fill : CupertinoIcons.heart,
-            size: 56,
-            iconSize: 24,
-            color: loved ? const Color(0xFFFF8F7A) : const Color(0x99FFFFFF),
-            onTap: onFavorite,
+          Pressable(
+            onTap: onOpenSettings,
+            child: Container(
+              height: 32,
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              decoration: BoxDecoration(
+                color: offSpeed
+                    ? const Color(0x1F9AF4D2)
+                    : const Color(0x12FFFFFF),
+                borderRadius: BorderRadius.circular(11),
+                border: Border.all(
+                  color: offSpeed
+                      ? const Color(0x4D9AF4D2)
+                      : const Color(0x1FFFFFFF),
+                ),
+              ),
+              child: Text(
+                '${speed.toStringAsFixed(speed % 1 == 0 ? 1 : 2)}×',
+                style: TextStyle(
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w700,
+                  color: offSpeed ? AppColors.accentDark : const Color(0xB3FFFFFF),
+                ),
+              ),
+            ),
           ),
         ],
       ),
@@ -739,169 +1125,154 @@ class _Ctrl extends StatelessWidget {
   const _Ctrl({
     required this.icon,
     required this.onTap,
-    this.size = 52,
-    this.iconSize = 22,
+    this.size = 50,
+    this.iconSize = 21,
     this.bright = false,
-    this.color,
+    this.onLongPress,
   });
 
   final IconData icon;
   final VoidCallback onTap;
+  final VoidCallback? onLongPress;
   final double size;
   final double iconSize;
   final bool bright;
-  final Color? color;
 
   @override
   Widget build(BuildContext context) {
     return Pressable(
       onTap: onTap,
+      onLongPress: onLongPress,
       child: SizedBox(
         width: size,
         height: size,
         child: Icon(
           icon,
           size: iconSize,
-          color: color ?? (bright ? const Color(0xCCFFFFFF) : const Color(0x99FFFFFF)),
+          color: bright ? const Color(0xCCFFFFFF) : const Color(0x99FFFFFF),
         ),
       ),
     );
   }
 }
 
-/// The row under the transport controls: timer, volume and details on the
-/// left; the play queue pinned to the far right where the thumb rests.
-class _BottomBar extends StatelessWidget {
-  const _BottomBar({required this.player, required this.song});
+/// One bar that answers "what comes next" and opens the queue. It replaced the
+/// old three-entry toolbar, two of which duplicated the settings sheet.
+class _UpNextBar extends StatelessWidget {
+  const _UpNextBar({required this.player});
 
   final PlayerController player;
-  final Song song;
 
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      height: 62,
-      child: Row(
-        children: <Widget>[
-          _PAction(
-            icon: CupertinoIcons.timer,
-            label: player.sleepRemaining == null
-                ? '定时'
-                : formatDuration(player.sleepRemaining!),
-            onTap: () => _showSleepSheet(context),
-          ),
-          const SizedBox(width: 4),
-          _PAction(
-            icon: CupertinoIcons.slider_horizontal_3,
-            label: '音量',
-            onTap: () => _showPlaybackSheet(context),
-          ),
-          const SizedBox(width: 4),
-          _PAction(
-            icon: CupertinoIcons.text_quote,
-            label: '详情',
-            onTap: () => showSongActions(context, song),
-          ),
-          const Spacer(),
-          _QueueAction(
-            count: player.queue.length,
-            onTap: () => _showQueueSheet(context),
-          ),
-        ],
-      ),
-    );
+  String get _kicker {
+    switch (player.playMode) {
+      case PlayMode.random:
+        return '随机播放';
+      case PlayMode.singleLoop:
+        return '单曲循环';
+      case PlayMode.listLoop:
+      case PlayMode.sequence:
+        return 'UP NEXT';
+    }
   }
-}
 
-class _PAction extends StatelessWidget {
-  const _PAction({
-    required this.icon,
-    required this.label,
-    required this.onTap,
-  });
-
-  final IconData icon;
-  final String label;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Pressable(
-      onTap: onTap,
-      child: SizedBox(
-        width: 56,
-        height: 58,
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            Icon(icon, size: 21, color: const Color(0x8AFFFFFF)),
-            const SizedBox(height: 4),
-            Text(
-              label,
-              style: const TextStyle(
-                fontSize: 10,
-                fontWeight: FontWeight.w500,
-                color: Color(0x8AFFFFFF),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
+  Song? get _next {
+    final queue = player.queue;
+    final index = player.index;
+    if (queue.length <= 1 || index < 0) return null;
+    switch (player.playMode) {
+      case PlayMode.random:
+        return null;
+      case PlayMode.singleLoop:
+        return queue[index];
+      case PlayMode.listLoop:
+        return queue[(index + 1) % queue.length];
+      case PlayMode.sequence:
+        return index + 1 < queue.length ? queue[index + 1] : null;
+    }
   }
-}
-
-class _QueueAction extends StatelessWidget {
-  const _QueueAction({required this.onTap, required this.count});
-
-  final VoidCallback onTap;
-  final int count;
 
   @override
   Widget build(BuildContext context) {
+    final next = _next;
+    final count = player.queue.length;
+    final line = next == null
+        ? (player.playMode == PlayMode.random
+            ? '下一首随机 · 点开队列看'
+            : count <= 1
+                ? '队列里只有这一首'
+                : '播放到队列末尾了')
+        : '${next.displayTitle} · ${next.displaySinger}';
+
     return Pressable(
-      onTap: onTap,
+      onTap: () => showPlayQueueSheet(context),
       child: Container(
-        height: 50,
-        padding: const EdgeInsets.symmetric(horizontal: 15),
+        height: 58,
+        padding: const EdgeInsets.symmetric(horizontal: 10),
         decoration: BoxDecoration(
-          color: const Color(0x1AFFFFFF),
+          color: const Color(0x0FFFFFFF),
           borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: const Color(0x2EFFFFFF)),
+          border: Border.all(color: const Color(0x1AFFFFFF)),
         ),
         child: Row(
-          mainAxisSize: MainAxisSize.min,
           children: <Widget>[
-            const Icon(
-              CupertinoIcons.music_note_list,
-              size: 20,
-              color: Color(0xE6FFFFFF),
+            SizedBox(
+              width: 42,
+              height: 42,
+              child: next == null
+                  ? Container(
+                      decoration: BoxDecoration(
+                        color: const Color(0x14FFFFFF),
+                        borderRadius: BorderRadius.circular(11),
+                      ),
+                      child: const Icon(
+                        CupertinoIcons.music_note_list,
+                        size: 17,
+                        color: Color(0x8AFFFFFF),
+                      ),
+                    )
+                  : CoverArt(song: next, size: 42, radius: 11),
             ),
-            const SizedBox(width: 8),
-            Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                const Text(
-                  '队列',
-                  style: TextStyle(
-                    fontSize: 12,
-                    height: 1.1,
-                    fontWeight: FontWeight.w700,
-                    color: Color(0xE6FFFFFF),
-                  ),
-                ),
-                if (count > 0)
+            const SizedBox(width: 11),
+            Expanded(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
                   Text(
-                    '$count 首',
-                    style: const TextStyle(
-                      fontSize: 9,
-                      height: 1.7,
-                      color: Color(0x70FFFFFF),
+                    _kicker,
+                    style: TextStyle(
+                      fontSize: 8,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 1.4,
+                      color: _kicker == 'UP NEXT'
+                          ? const Color(0x59FFFFFF)
+                          : const Color(0x80F2D08C),
                     ),
                   ),
-              ],
+                  const SizedBox(height: 3),
+                  Text(
+                    line,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w600,
+                      color: Color(0xE8FFFFFF),
+                    ),
+                  ),
+                ],
+              ),
             ),
+            const SizedBox(width: 8),
+            Text(
+              '队列 $count ›',
+              style: const TextStyle(
+                fontSize: 10.5,
+                fontWeight: FontWeight.w600,
+                color: Color(0x8CFFFFFF),
+              ),
+            ),
+            const SizedBox(width: 2),
           ],
         ),
       ),
@@ -909,135 +1280,203 @@ class _QueueAction extends StatelessWidget {
   }
 }
 
-void _showQueueSheet(BuildContext context) {
-  showFlmSheet<void>(
+// ---------- Playback settings (the ⋯ sheet) ----------
+
+Future<void> _showPlaybackSheet(BuildContext context, Song song) {
+  return showFlmSheet<void>(
     context,
-    title: '播放队列',
-    titleTrailing: Builder(
-      builder: (sheetContext) {
-        final player = context.watch<PlayerController>();
-        return Text(
-          '${player.queue.length} 首',
-          style: TextStyle(
-            fontSize: 11,
-            fontWeight: FontWeight.w600,
-            color: mutedFor(sheetContext),
+    title: '播放设置',
+    titleTrailing: Consumer<PlayerController>(
+      builder: (context, player, _) {
+        final sleep = player.sleepRemaining;
+        if (sleep == null) return const SizedBox.shrink();
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+          decoration: BoxDecoration(
+            color: const Color(0x1FF2D08C),
+            borderRadius: BorderRadius.circular(9),
+          ),
+          child: Text(
+            '定时 ${formatDuration(sleep)}',
+            style: const TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.w700,
+              color: Color(0xFFF2D08C),
+            ),
           ),
         );
       },
     ),
     child: Builder(
-      builder: (sheetContext) {
-        return Consumer<PlayerController>(
-          builder: (context, player, _) {
-            if (player.queue.isEmpty) {
-              return const Padding(
-                padding: EdgeInsets.only(top: 30, bottom: 40),
-                child: EmptyState(
-                  title: '播放队列是空的',
-                  icon: CupertinoIcons.music_note_list,
-                ),
-              );
-            }
-            return ListView.builder(
-              shrinkWrap: true,
-              padding: const EdgeInsets.only(bottom: 6),
-              itemCount: player.queue.length,
-              itemBuilder: (context, index) {
-                final song = player.queue[index];
-                final active = player.index == index;
-                return Pressable(
-                  onTap: () {
-                    player.jumpToQueueIndex(index);
-                    Navigator.pop(sheetContext);
-                  },
-                  child: Container(
-                    margin: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 7),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(13),
-                      gradient: active
-                          ? LinearGradient(
-                              begin: Alignment.centerLeft,
-                              end: Alignment.centerRight,
-                              colors: <Color>[
-                                accentSoftColor(context),
-                                Colors.transparent,
-                              ],
-                              stops: const <double>[0, 0.85],
-                            )
-                          : null,
-                    ),
-                    child: Row(
-                      children: <Widget>[
-                        SizedBox(
-                          width: 22,
-                          child: active
-                              ? EqBars(height: 11, color: accentFor(context))
-                              : Text(
-                                  '${index + 1}',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.w600,
-                                    color: faintFor(context),
-                                  ),
-                                ),
-                        ),
-                        const SizedBox(width: 10),
-                        CoverArt(song: song, size: 40, radius: 11),
-                        const SizedBox(width: 11),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: <Widget>[
-                              Text(
-                                song.displayTitle,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: TextStyle(
-                                  fontSize: 12.5,
-                                  fontWeight: FontWeight.w600,
-                                  color: active
-                                      ? accentFor(context)
-                                      : textFor(context),
-                                ),
-                              ),
-                              const SizedBox(height: 2.5),
-                              Text(
-                                song.displaySinger,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: TextStyle(
-                                  fontSize: 10,
-                                  color: faintFor(context),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(width: 6),
-                        Pressable(
-                          onTap: () => player.removeFromQueue(song),
-                          child: SizedBox(
-                            width: 30,
-                            height: 30,
-                            child: Icon(
-                              CupertinoIcons.xmark_circle_fill,
-                              size: 15,
-                              color: faintFor(context),
-                            ),
-                          ),
-                        ),
-                      ],
+      builder: (sheetContext) => Consumer<PlayerController>(
+        builder: (context, player, _) {
+          final settings = player.appState.settings;
+          return Padding(
+            padding: const EdgeInsets.fromLTRB(6, 2, 6, 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                _settingsRow(
+                  context,
+                  icon: CupertinoIcons.speaker_2_fill,
+                  label: '音量',
+                  trailing: Text(
+                    '${(settings.volume * 100).round()}%',
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w700,
+                      color: mutedFor(context),
                     ),
                   ),
-                );
-              },
-            );
-          },
-        );
-      },
+                  child: Slider(
+                    value: settings.volume.clamp(0.0, 1.0).toDouble(),
+                    onChanged: player.setVolume,
+                  ),
+                ),
+                _settingsRow(
+                  context,
+                  icon: CupertinoIcons.timer,
+                  label: '定时停止',
+                  caption: player.sleepRemaining == null
+                      ? '选一个时长，到点自动暂停'
+                      : '剩余 ${formatDuration(player.sleepRemaining!)}',
+                  value: player.sleepRemaining == null ? '设置 ›' : '更改 ›',
+                  onTap: () => _showSleepSheet(context),
+                ),
+                _settingsRow(
+                  context,
+                  icon: CupertinoIcons.waveform,
+                  label: '音质',
+                  caption: '来源 ${srcShortLabel(song.source)}',
+                  value: '${_qualityLabel(settings.quality)} ›',
+                  onTap: () => _showQualitySheet(context),
+                ),
+                _settingsRow(
+                  context,
+                  icon: CupertinoIcons.forward_end_alt_fill,
+                  label: '倍速',
+                  value: '${settings.speed.toStringAsFixed(2)}×',
+                  child: Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Wrap(
+                      spacing: 7,
+                      runSpacing: 7,
+                      children: <double>[0.75, 1.0, 1.25, 1.5, 2.0]
+                          .map(
+                            (speed) => OptionPill(
+                              label: '${speed.toStringAsFixed(2)}×',
+                              active:
+                                  (settings.speed - speed).abs() < 0.001,
+                              onTap: () => player.setSpeed(speed),
+                            ),
+                          )
+                          .toList(),
+                    ),
+                  ),
+                ),
+                _settingsRow(
+                  context,
+                  icon: CupertinoIcons.info_circle,
+                  label: '歌曲详情',
+                  caption: '专辑、来源、可执行的歌曲操作',
+                  value: '›',
+                  onTap: () => showSongActions(context, song),
+                ),
+                _settingsRow(
+                  context,
+                  icon: CupertinoIcons.arrow_clockwise,
+                  label: '重载歌词',
+                  caption: '歌词不匹配或没有歌词时试试',
+                  value: '›',
+                  onTap: () {
+                    unawaited(player.reloadLyrics());
+                    flmToast(context, '正在重新获取歌词');
+                  },
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    ),
+  );
+}
+
+Widget _settingsRow(
+  BuildContext context, {
+  required IconData icon,
+  required String label,
+  String? caption,
+  String? value,
+  Widget? trailing,
+  Widget? child,
+  VoidCallback? onTap,
+}) {
+  final body = Row(
+    children: <Widget>[
+      Container(
+        width: 32,
+        height: 32,
+        decoration: BoxDecoration(
+          color: surface2For(context),
+          borderRadius: BorderRadius.circular(11),
+          border: Border.all(color: lineColor(context)),
+        ),
+        child: Icon(icon, size: 15, color: mutedFor(context)),
+      ),
+      const SizedBox(width: 11),
+      Expanded(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: textFor(context),
+              ),
+            ),
+            if (caption != null) ...<Widget>[
+              const SizedBox(height: 2),
+              Text(
+                caption,
+                style: TextStyle(fontSize: 10.5, color: faintFor(context)),
+              ),
+            ],
+          ],
+        ),
+      ),
+      if (trailing != null) trailing else if (value != null)
+        Text(
+          value,
+          style: TextStyle(
+            fontSize: 11.5,
+            fontWeight: FontWeight.w700,
+            color: accentFor(context),
+          ),
+        ),
+    ],
+  );
+
+  return Pressable(
+    onTap: onTap,
+    child: Container(
+      margin: const EdgeInsets.symmetric(vertical: 3),
+      padding: EdgeInsets.fromLTRB(10, onTap == null ? 8 : 9, 12, 8),
+      decoration: BoxDecoration(
+        color: surface2For(context),
+        borderRadius: BorderRadius.circular(15),
+        border: Border.all(color: lineColor(context)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          body,
+          if (child != null) child,
+        ],
+      ),
     ),
   );
 }
@@ -1047,149 +1486,114 @@ void _showSleepSheet(BuildContext context) {
     context,
     title: '定时停止播放',
     child: Builder(
-      builder: (sheetContext) {
-        return Consumer<PlayerController>(
-          builder: (context, player, _) {
-            final remaining = player.sleepRemaining;
-            return ListView(
-              shrinkWrap: true,
-              padding: const EdgeInsets.only(bottom: 6),
-              children: <Widget>[
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(kGutter, 2, kGutter, 10),
-                  child: Text(
-                    remaining == null
-                        ? '选择时长后，播放会在倒计时结束时停止。'
-                        : '当前剩余 ${formatDuration(remaining)}',
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: mutedFor(context),
-                    ),
-                  ),
+      builder: (sheetContext) => Consumer<PlayerController>(
+        builder: (context, player, _) {
+          final remaining = player.sleepRemaining;
+          return ListView(
+            shrinkWrap: true,
+            padding: const EdgeInsets.only(bottom: 6),
+            children: <Widget>[
+              Padding(
+                padding: const EdgeInsets.fromLTRB(kGutter, 2, kGutter, 10),
+                child: Text(
+                  remaining == null
+                      ? '选择时长后，播放会在倒计时结束时停止。'
+                      : '当前剩余 ${formatDuration(remaining)}',
+                  style: TextStyle(fontSize: 11, color: mutedFor(context)),
                 ),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 10),
-                  child: Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: <int>[15, 30, 45, 60, 90].map((minutes) {
-                      return OptionPill(
-                        label: '$minutes 分钟',
-                        active: false,
-                        onTap: () {
-                          player.setSleepTimer(Duration(minutes: minutes));
-                          Navigator.pop(sheetContext);
-                          flmToast(context, '将在 $minutes 分钟后停止');
-                        },
-                      );
-                    }).toList(),
-                  ),
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: <int>[15, 30, 45, 60, 90].map((minutes) {
+                    return OptionPill(
+                      label: '$minutes 分钟',
+                      active: false,
+                      onTap: () {
+                        player.setSleepTimer(Duration(minutes: minutes));
+                        Navigator.pop(sheetContext);
+                        flmToast(context, '将在 $minutes 分钟后停止');
+                      },
+                    );
+                  }).toList(),
                 ),
-                if (remaining != null) ...<Widget>[
-                  const SizedBox(height: 8),
-                  SheetAction(
-                    icon: CupertinoIcons.timer,
-                    label: '关闭定时',
-                    danger: true,
-                    onTap: () {
-                      player.setSleepTimer(null);
-                      Navigator.pop(sheetContext);
-                      flmToast(context, '已关闭定时');
-                    },
-                  ),
-                ],
+              ),
+              if (remaining != null) ...<Widget>[
+                const SizedBox(height: 8),
+                SheetAction(
+                  icon: CupertinoIcons.timer,
+                  label: '关闭定时',
+                  danger: true,
+                  onTap: () {
+                    player.setSleepTimer(null);
+                    Navigator.pop(sheetContext);
+                    flmToast(context, '已关闭定时');
+                  },
+                ),
               ],
-            );
-          },
+            ],
+          );
+        },
+      ),
+    ),
+  );
+}
+
+void _showQualitySheet(BuildContext context) {
+  showFlmSheet<void>(
+    context,
+    title: '优先音质',
+    child: Builder(
+      builder: (sheetContext) {
+        final appState = context.read<AppState>();
+        final current = appState.settings.quality;
+        const options = <String, String>{
+          '128k': '标准 128k',
+          '320k': '高品质 320k',
+          'flac': '无损 FLAC',
+          'flac24bit': '24bit FLAC',
+        };
+        return ListView(
+          shrinkWrap: true,
+          padding: const EdgeInsets.only(bottom: 6),
+          children: <Widget>[
+            for (final entry in options.entries)
+              OptionRow(
+                label: entry.value,
+                active: current == entry.key,
+                onTap: () {
+                  appState.update((settings) => settings.quality = entry.key);
+                  Navigator.pop(sheetContext);
+                  flmToast(context, '优先音质：${entry.value}');
+                },
+              ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 10, 14, 4),
+              child: Text(
+                '只影响之后获取的播放链接，当前这首不会重新加载。',
+                style: TextStyle(fontSize: 10.5, color: faintFor(context)),
+              ),
+            ),
+          ],
         );
       },
     ),
   );
 }
 
-void _showPlaybackSheet(BuildContext context) {
-  showFlmSheet<void>(
-    context,
-    title: '播放设置',
-    child: Builder(
-      builder: (sheetContext) {
-        return Consumer<PlayerController>(
-          builder: (context, player, _) {
-            final volume = player.appState.settings.volume;
-            final speed = player.appState.settings.speed;
-            return Padding(
-              padding: const EdgeInsets.fromLTRB(kGutter, 4, kGutter, 20),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: <Widget>[
-                  const Overline('VOLUME'),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: <Widget>[
-                      Expanded(
-                        child: Slider(
-                          value: volume.clamp(0.0, 1.0).toDouble(),
-                          onChanged: player.setVolume,
-                        ),
-                      ),
-                      SizedBox(
-                        width: 44,
-                        child: Text(
-                          '${(volume * 100).round()}%',
-                          textAlign: TextAlign.right,
-                          style: TextStyle(
-                            fontSize: 11.5,
-                            fontWeight: FontWeight.w600,
-                            color: mutedFor(context),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 14),
-                  const Overline('SPEED'),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: <Widget>[
-                      Expanded(
-                        child: Slider(
-                          value: speed.clamp(0.5, 2.0).toDouble(),
-                          min: 0.5,
-                          max: 2.0,
-                          divisions: 12,
-                          onChanged: (value) => player
-                              .setSpeed(double.parse(value.toStringAsFixed(2))),
-                        ),
-                      ),
-                      SizedBox(
-                        width: 44,
-                        child: Text(
-                          '${speed.toStringAsFixed(2)}x',
-                          textAlign: TextAlign.right,
-                          style: TextStyle(
-                            fontSize: 11.5,
-                            fontWeight: FontWeight.w600,
-                            color: mutedFor(context),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 10),
-                  Text(
-                    '提示：播放速度会同时影响歌词滚动。',
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: faintFor(context),
-                    ),
-                  ),
-                ],
-              ),
-            );
-          },
-        );
-      },
-    ),
-  );
+String _qualityLabel(String quality) {
+  switch (quality) {
+    case '128k':
+      return '标准';
+    case '320k':
+      return '高品质';
+    case 'flac':
+      return '无损';
+    case 'flac24bit':
+      return '24bit';
+    default:
+      return quality;
+  }
 }
