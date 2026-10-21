@@ -68,8 +68,28 @@ jobs:
       - name: Generate Android project
         run: bash tool/bootstrap_android.sh
 
+      # Flutter signs the release APK with its *debug* key, and a hosted runner
+      # creates that key from scratch on every build. Left alone, each build is
+      # signed by a different key, so Android rejects the in-place update
+      # ("app not installed") and the user has to uninstall first — which wipes
+      # the local library and the imported sources. Pin the key instead: restore
+      # it when a previous build stored one, and save it the first time.
+      - name: Restore debug keystore
+        id: keystore
+        uses: actions/cache@v4
+        with:
+          path: ~/.android
+          key: debug-keystore-v1
+
       - name: Build release APK (universal, debug-signed)
         run: flutter build apk --release
+
+      - name: Save debug keystore
+        if: success() && steps.keystore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.android
+          key: debug-keystore-v1
 
       - name: Stage artifact
         run: |
