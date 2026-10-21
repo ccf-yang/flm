@@ -22,6 +22,7 @@ class CustomSourcesScreen extends StatelessWidget {
     final manual = state.repository.byGroup(sourceGroupManual);
     final auto = state.repository.byGroup(sourceGroupAuto);
     final web = state.repository.byGroup(sourceGroupWeb);
+    final disabled = state.disabledSources;
     return Scaffold(
       body: Stack(
         children: <Widget>[
@@ -146,6 +147,39 @@ class CustomSourcesScreen extends StatelessWidget {
                         const _GroupHint(
                           '从 zlyon.github.io/lx-hub 的每日实测清单批量导入 web 判定可用的源，'
                           '获取后覆盖本分组。',
+                        ),
+                      // The web list is only as fresh as the hub's last daily
+                      // scan, so this is the way to re-test a whole group without
+                      // pressing 探测 on every row by hand. It sits under the rows
+                      // rather than in the header: that row already carries the
+                      // two actions the group needs at a glance.
+                      if (web.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(kGutter, 10, kGutter, 0),
+                          child: AuroraButton(
+                            label: state.hubWorking
+                                ? '正在探测…'
+                                : '全部探测这 ${web.length} 个源',
+                            icon: CupertinoIcons.dot_radiowaves_left_right,
+                            secondary: true,
+                            expand: true,
+                            onTap: state.hubWorking
+                                ? null
+                                : () => _probeGroup(context, state, sourceGroupWeb),
+                          ),
+                        ),
+
+                      // ── 一键清理：探测判定为死的源，跨所有分组 ──
+                      if (disabled.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(kGutter, 22, kGutter, 0),
+                          child: AuroraButton(
+                            label: '删除全部禁用源（${disabled.length} 个）',
+                            icon: CupertinoIcons.trash,
+                            secondary: true,
+                            expand: true,
+                            onTap: () => _deleteDisabled(context, state),
+                          ),
                         ),
 
                       const SizedBox(height: 10),
@@ -380,6 +414,150 @@ class CustomSourcesScreen extends StatelessWidget {
     final removed = await state.clearHubGroup(group);
     if (!context.mounted) return;
     flmToast(context, '已清空 $removed 个源');
+  }
+
+  /// Probe every source of [group] the way the user would by tapping 探测 on each
+  /// row, and switch the ones that cannot serve audio off automatically.
+  Future<void> _probeGroup(
+    BuildContext context,
+    SourceState state,
+    String group,
+  ) async {
+    if (state.hubWorking) {
+      flmToast(context, '正在检测源，请稍候');
+      return;
+    }
+    final count = state.repository.byGroup(group).length;
+    if (count == 0) return;
+    final confirmed = await flmConfirmDialog(
+      context,
+      title: '全部探测｜${sourceGroupName(group)}',
+      message: '逐个挂载脚本并实测取链，和手动一行行点探测一样；'
+          '取不到真实音频的源会被自动禁用，不再参与播放。'
+          '拿不到测试歌曲的源保持原样，中途也可以点停止。',
+      cancelLabel: '取消',
+      confirmLabel: '开始探测 $count 个',
+    );
+    if (!confirmed) return;
+    if (!context.mounted) return;
+
+    final outcome = await state.probeGroup(group);
+    if (!context.mounted) return;
+    if (outcome.error != null) {
+      flmToast(context, outcome.error!);
+      return;
+    }
+    await _showGroupProbeResult(context, outcome);
+  }
+
+  /// The verdict list of a batch probe: what was switched off, what answered,
+  /// and what could not be judged at all.
+  Future<void> _showGroupProbeResult(
+    BuildContext context,
+    GroupProbeOutcome outcome,
+  ) async {
+    await showFlmSheet<void>(
+      context,
+      title: '探测结果 · ${sourceGroupName(outcome.group)}',
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Flexible(
+            child: ListView(
+              shrinkWrap: true,
+              padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
+              children: <Widget>[
+                Text(
+                  '共检测 ${outcome.reports.length} 个源，'
+                  '可用 ${outcome.usable.length} 个，'
+                  '已自动禁用 ${outcome.disabled.length} 个'
+                  '${outcome.skipped.isEmpty ? '' : '，未判定 ${outcome.skipped.length} 个'}'
+                  '${outcome.cancelled ? '（已手动停止）' : ''}。\n'
+                  '被禁用的源还在列表里，可以随时用页面底部的「删除全部禁用源」清掉。',
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    height: 1.6,
+                    color: mutedFor(context),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                if (outcome.disabled.isNotEmpty) ...<Widget>[
+                  ...outcome.disabled.map(
+                    (report) => _VerdictRow(
+                      name: report.name,
+                      detail: report.detail,
+                      ok: false,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                ],
+                if (outcome.usable.isNotEmpty) ...<Widget>[
+                  Text(
+                    '可用 ${outcome.usable.length} 个',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      color: faintFor(context),
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  ...outcome.usable.map(
+                    (report) => _VerdictRow(
+                      name: report.name,
+                      detail: report.detail,
+                      ok: true,
+                    ),
+                  ),
+                ],
+                if (outcome.skipped.isNotEmpty) ...<Widget>[
+                  const SizedBox(height: 8),
+                  ...outcome.skipped.map(
+                    (report) => _VerdictRow(
+                      name: report.name,
+                      detail: report.detail,
+                      ok: false,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 10, 20, 8),
+            child: AuroraButton(
+              label: '知道了',
+              secondary: true,
+              expand: true,
+              onTap: () => Navigator.pop(context),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Drop every source a probe has switched off, across all three groups. The
+  /// confirmation names them, because deleting also removes the saved script and
+  /// its refresh URL.
+  Future<void> _deleteDisabled(BuildContext context, SourceState state) async {
+    final targets = state.disabledSources;
+    if (targets.isEmpty) return;
+    final names = targets.map((source) => source.name).toList();
+    final shown = names.take(6).join('、');
+    final confirmed = await flmConfirmDialog(
+      context,
+      title: '删除全部禁用源',
+      message: '删除这 ${targets.length} 个已禁用的源及其脚本？\n'
+          '$shown${names.length > 6 ? ' 等' : ''}\n'
+          '启用中的源不会被删除，源页的手动导入也不会受影响。',
+      confirmLabel: '删除',
+      danger: true,
+    );
+    if (!confirmed) return;
+    if (!context.mounted) return;
+    final removed = await state.deleteDisabledSources();
+    if (!context.mounted) return;
+    flmToast(context, '已删除 $removed 个禁用源');
   }
 
   String _stamp(DateTime? time) {
