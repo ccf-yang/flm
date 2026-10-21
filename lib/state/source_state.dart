@@ -88,18 +88,84 @@ class SourceState extends ChangeNotifier {
   int hubTotal = 0;
   bool _hubCancelRequested = false;
 
+  /// Completed by [cancelHubScan] so the step that is *currently running* can be
+  /// abandoned at once instead of only being noticed when it happens to finish.
+  /// Recreated by every batch entry point.
+  Completer<void>? _hubAbort;
+
   final SourceHub _hub = SourceHub();
+
+  /// Index from the most recent hub scan, kept so a batch probe can tell which
+  /// platform a previously imported script claimed ([_hubEntryFor]).
+  List<HubSourceEntry>? _hubIndex;
+
+  /// One source must not hold up the whole batch: a script whose sandbox never
+  /// answers is reported as *not judged* rather than being switched off, because
+  /// the timeout says nothing about whether the link it would return is alive.
+  static const Duration _groupProbeDeadline = Duration(seconds: 40);
 
   /// A probe needs a real song per platform; the first search result is cached
   /// so a 20-candidate scan only pays for the search once per platform.
   final Map<String, Song?> _hubTestSongs = <String, Song?>{};
 
-  /// Ask the running batch scan to stop after its current candidate.
+  /// Ask the running batch — a hub scan or a group probe — to stop.
   void cancelHubScan() {
     if (!hubWorking) return;
     _hubCancelRequested = true;
+    final abort = _hubAbort;
+    if (abort != null && !abort.isCompleted) abort.complete();
     hubStatus = '正在停止…';
     notifyListeners();
+  }
+
+  void _beginHubRun(String initialStatus) {
+    hubWorking = true;
+    _hubCancelRequested = false;
+    _hubAbort = Completer<void>();
+    hubDone = 0;
+    hubTotal = 0;
+    hubStatus = initialStatus;
+    notifyListeners();
+  }
+
+  void _endHubRun() {
+    hubWorking = false;
+    _hubAbort = null;
+    hubStatus = '';
+    hubDone = 0;
+    hubTotal = 0;
+    notifyListeners();
+  }
+
+  /// Run a long step while a batch is allowed to be abandoned.
+  ///
+  /// Futures cannot be cancelled, so checking [_hubCancelRequested] only between
+  /// candidates made one press wait out whatever the current candidate was busy
+  /// with — up to two 25 s 取链 attempts, or a script that never answers at all.
+  /// That is why 停止 felt dead. The step is raced against the abort signal
+  /// instead, so a press returns the batch immediately. The abandoned step keeps
+  /// running to completion in the background; its result and any late failure are
+  /// drained on purpose, otherwise a script that finally throws after the user
+  /// walked away would surface as an uncaught asynchronous error.
+  Future<T> _hubGuarded<T>(Future<T> Function() step) async {
+    final abort = _hubAbort;
+    if (abort == null) return step();
+    final work = step();
+    final raced = await Future.any<List<Object?>>(<Future<List<Object?>>>[
+      work.then<List<Object?>>(
+        (value) => <Object?>[_HubStepState.done, value, null],
+        onError: (Object error) => <Object?>[_HubStepState.failed, null, error],
+      ),
+      abort.future.then<List<Object?>>(
+        (_) => <Object?>[_HubStepState.aborted, null, null],
+      ),
+    ]);
+    if (raced[0] == _HubStepState.aborted) {
+      unawaited(work.then<void>((_) {}, onError: (Object _) {}));
+      throw const HubScanCancelled();
+    }
+    if (raced[0] == _HubStepState.done) return raced[1] as T;
+    throw raced[2]!;
   }
 
   List<CustomSourceInfo> get sources => repository.sources;
@@ -771,12 +837,7 @@ class SourceState extends ChangeNotifier {
         error: '已有一批源在获取中，请等待它结束',
       );
     }
-    hubWorking = true;
-    _hubCancelRequested = false;
-    hubDone = 0;
-    hubTotal = 0;
-    hubStatus = '正在读取 lx-hub 源列表…';
-    notifyListeners();
+    _beginHubRun('正在读取 lx-hub 源列表…');
 
     final candidates = <HubCandidateResult>[];
     final seeds = <SourceSeed>[];
@@ -786,7 +847,8 @@ class SourceState extends ChangeNotifier {
     var cancelled = false;
 
     try {
-      final index = await _hub.fetchIndex();
+      final index = await _hubGuarded(_hub.fetchIndex);
+      _hubIndex = index.entries;
       generatedAt = index.generatedAt;
       final published = index.entries
           .where((entry) => entry.name.trim().isNotEmpty)
@@ -823,9 +885,17 @@ class SourceState extends ChangeNotifier {
         hubStatus = '正在检测「${entry.name}」';
         notifyListeners();
 
-        HubDownload? download;
+        // `late` rather than nullable: every path that leaves the try block
+        // without a download either reports the failure or unwinds the whole
+        // scan, so the reads below are never reached unset — and a non-nullable
+        // local also survives being used inside a closure.
+        late HubDownload download;
         try {
-          download = await _hub.downloadFirst(entry.downloadCandidates);
+          download = await _hubGuarded(
+            () => _hub.downloadFirst(entry.downloadCandidates),
+          );
+        } on HubScanCancelled {
+          rethrow;
         } catch (error) {
           candidates.add(HubCandidateResult(
             entry: entry,
@@ -837,10 +907,14 @@ class SourceState extends ChangeNotifier {
           continue;
         }
 
+        final script = download.script;
+        final scriptUrl = download.url;
         List<String> platforms;
         String detail;
         if (selfProbe) {
-          final verdict = await _probeHubCandidate(entry, download.script);
+          final verdict = await _hubGuarded(
+            () => _probeHubCandidate(entry, script),
+          );
           platforms = verdict.platforms;
           detail = verdict.detail;
         } else {
@@ -856,8 +930,8 @@ class SourceState extends ChangeNotifier {
         ));
         if (platforms.isNotEmpty) {
           seeds.add(SourceSeed(
-            script: download.script,
-            importUrl: download.url,
+            script: script,
+            importUrl: scriptUrl,
             label: entry.name,
             platforms: platforms,
           ));
@@ -865,14 +939,14 @@ class SourceState extends ChangeNotifier {
         hubDone++;
         notifyListeners();
       }
+    } on HubScanCancelled {
+      // 停止 pressed: the verdicts gathered so far are still worth showing, and
+      // nothing is written until the user approves the list.
+      cancelled = true;
     } catch (error) {
       failure = '$error';
     } finally {
-      hubWorking = false;
-      hubStatus = '';
-      hubDone = 0;
-      hubTotal = 0;
-      notifyListeners();
+      _endHubRun();
     }
 
     debugLog?.record('批量获取源结束', <String, Object?>{
@@ -941,6 +1015,10 @@ class SourceState extends ChangeNotifier {
 
       String lastError = '';
       for (final platform in order.take(2)) {
+        // 停止 pressed while the first platform was being tested: give up at
+        // once instead of spending a second deadline on a script the user has
+        // already walked away from.
+        if (_hubCancelRequested) throw const HubScanCancelled();
         final song = await _testSongFor(platform);
         if (song == null) {
           lastError = '无法获取 ${hubPlatformLabel(platform)} 的测试歌曲';
@@ -1013,6 +1091,216 @@ class SourceState extends ChangeNotifier {
     }
     _hubTestSongs[platform] = found;
     return found;
+  }
+
+  /// Batch version of tapping 探测 on every row of [group] by hand.
+  ///
+  /// Each imported script is mounted and asked for a real link against a song
+  /// fetched for one of the platforms it claims, which is the same path playback
+  /// uses. `web探测导入源` inherits the hub's *daily* verdict, so a whole group
+  /// can quietly rot between refreshes; this is how the user finds out without
+  /// pressing twenty buttons. Anything that cannot serve a link is switched off
+  /// straight away — a dead script left enabled slows down every song, because
+  /// playback waits for it before falling through to the next source.
+  ///
+  /// A source that could not be judged at all (no test song could be fetched for
+  /// any of its platforms, or the step timed out) keeps its current state: the
+  /// batch punishes broken scripts, not an app that had nothing to test them with.
+  Future<GroupProbeOutcome> probeGroup(String group) async {
+    if (hubWorking) {
+      return GroupProbeOutcome(
+        group: group,
+        reports: const <GroupProbeReport>[],
+        error: '已有一批源在检测中，请等待它结束',
+      );
+    }
+    final targets = repository.byGroup(group);
+    if (targets.isEmpty) {
+      return GroupProbeOutcome(
+        group: group,
+        reports: const <GroupProbeReport>[],
+        error: '「${sourceGroupName(group)}」里还没有源',
+      );
+    }
+    _beginHubRun('正在逐个实测「${sourceGroupName(group)}」…');
+
+    final reports = <GroupProbeReport>[];
+    var cancelled = false;
+    try {
+      hubTotal = targets.length;
+      notifyListeners();
+      for (final source in targets) {
+        if (_hubCancelRequested) {
+          cancelled = true;
+          break;
+        }
+        hubStatus = '正在探测「${source.name}」';
+        notifyListeners();
+        GroupProbeReport? report;
+        try {
+          final song = await _hubGuarded(
+            () => _songForGroupProbe(source).timeout(_groupProbeDeadline),
+          );
+          if (song == null) {
+            report = GroupProbeReport(
+              name: source.name,
+              state: GroupProbeState.skipped,
+              detail: '拿不到测试歌曲，未做任何改动',
+            );
+          } else {
+            final probe = await _hubGuarded(
+              () => probeSource(source, song: song).timeout(_groupProbeDeadline),
+            );
+            if (probe.ok) {
+              report = GroupProbeReport(
+                name: source.name,
+                state: GroupProbeState.usable,
+                detail: source.disabled
+                    ? '${probe.headline}（禁用状态保持不变，要用的话手动启用）'
+                    : probe.headline,
+              );
+            } else if (probe.headline == '缺少在线歌曲') {
+              report = GroupProbeReport(
+                name: source.name,
+                state: GroupProbeState.skipped,
+                detail: '没有可测试的歌曲，未做任何改动',
+              );
+            } else {
+              await repository.setDisabled(source.id, true);
+              report = GroupProbeReport(
+                name: source.name,
+                state: GroupProbeState.disabled,
+                detail: '${probe.headline}：${probe.detail}',
+              );
+            }
+          }
+        } on HubScanCancelled {
+          cancelled = true;
+        } on TimeoutException {
+          report = GroupProbeReport(
+            name: source.name,
+            state: GroupProbeState.skipped,
+            detail: '超过 ${_groupProbeDeadline.inSeconds}s 没有回应，未做任何改动',
+          );
+        } catch (error) {
+          await repository.setDisabled(source.id, true);
+          report = GroupProbeReport(
+            name: source.name,
+            state: GroupProbeState.disabled,
+            detail: '$error',
+          );
+        }
+        final judged = report;
+        if (judged != null) reports.add(judged);
+        hubDone++;
+        notifyListeners();
+        if (cancelled) break;
+      }
+    } finally {
+      _endHubRun();
+    }
+
+    final disabledCount =
+        reports.where((report) => report.state == GroupProbeState.disabled).length;
+    debugLog?.record('批量探测结束', <String, Object?>{
+      '分组': sourceGroupName(group),
+      '检测': reports.length,
+      '可用': reports.where((report) => report.state == GroupProbeState.usable).length,
+      '禁用': disabledCount,
+      '未判定': reports.where((report) => report.state == GroupProbeState.skipped).length,
+      '取消': cancelled,
+    });
+    return GroupProbeOutcome(
+      group: group,
+      reports: reports,
+      cancelled: cancelled,
+    );
+  }
+
+  /// The song a group probe tests one source against.
+  ///
+  /// Picking the wrong platform is worse than picking no platform: testing a
+  /// `QQ`-only script with a 网易云 song is answered by [probeSource] as
+  /// "不支持 WY", which would batch-deactivate a perfectly healthy source. So the
+  /// script is initialized first and the song is chosen from the platforms it
+  /// actually claims — with the currently-playing track preferred when it happens
+  /// to be one of them.
+  Future<Song?> _songForGroupProbe(CustomSourceInfo source) async {
+    await _initialize(source);
+    final slot = _slots[source.id];
+    final claimed = <String>[
+      if (slot != null && slot.ready)
+        ...slot.capabilities.sources.keys.where(
+          (name) => slot.capabilities.supports(name, 'musicUrl'),
+        ),
+    ];
+    if (claimed.isEmpty) {
+      // Nothing usable was read from the script itself: fall back to what the hub
+      // said about it, then to every platform the app knows how to search.
+      claimed.addAll(_hubEntryFor(source)?.usablePlatforms ?? const <String>[]);
+      if (claimed.isEmpty) claimed.addAll(hubPlatformNames.keys);
+    }
+    final playing = appState.settings.lastSong;
+    if (playing != null &&
+        !playing.isLocal &&
+        playing.source.isNotEmpty &&
+        claimed.contains(playing.source)) {
+      return playing;
+    }
+    for (final platform in claimed) {
+      final song = await _testSongFor(platform);
+      if (song != null) return song;
+    }
+    return null;
+  }
+
+  /// Guess which published hub entry an imported script came from, so a batch
+  /// probe knows which platform is worth searching a test song for. The id is
+  /// kept stable by [repository], but older imports and hand-pasted scripts carry
+  /// no trace of it, hence the name match and the address fallback.
+  HubSourceEntry? _hubEntryFor(CustomSourceInfo source) {
+    final index = _hubIndex;
+    if (index == null) return null;
+    HubSourceEntry? find(bool Function(HubSourceEntry) test) {
+      for (final entry in index) {
+        if (test(entry)) return entry;
+      }
+      return null;
+    }
+
+    final suffix = source.id.startsWith('hub_')
+        ? source.id.substring('hub_'.length)
+        : null;
+    final byId = suffix == null ? null : find((entry) => entry.id == suffix);
+    if (byId != null) return byId;
+    final byName = find((entry) => entry.name == source.name);
+    if (byName != null) return byName;
+    final url = source.importUrl;
+    if (url == null || url.isEmpty) return null;
+    return find((entry) => entry.rawUrl == url || entry.mirrors.contains(url));
+  }
+
+  /// Sources switched off by a probe, across every group. They stay imported and
+  /// refreshable, but the 自定义源 page offers one tap to drop all of them.
+  List<CustomSourceInfo> get disabledSources => repository.sources
+      .where((source) => source.disabled)
+      .toList(growable: false);
+
+  /// 一键删除所有禁用源. Enabled sources — including the hand-imported ones — are
+  /// never touched, so the button only ever removes what a probe already proved
+  /// dead.
+  Future<int> deleteDisabledSources() async {
+    final targets = disabledSources;
+    for (final source in targets) {
+      await deleteSource(source.id);
+    }
+    if (targets.isNotEmpty) {
+      debugLog?.record('删除全部禁用源', <String, Object?>{
+        '数量': targets.length,
+        '源': targets.map((source) => source.name).join('、'),
+      });
+    }
+    return targets.length;
   }
 
   /// Overwrite one batch group with the seeds the user just approved.
@@ -1139,4 +1427,67 @@ class SourceProbeReport {
   final bool ok;
   final String headline;
   final String detail;
+}
+
+/// 停止 abandoned a batch step. It is an exception only so a press can unwind the
+/// loop from inside whatever the current candidate is awaiting; the batch swallows
+/// it and reports `cancelled` instead.
+class HubScanCancelled implements Exception {
+  const HubScanCancelled();
+}
+
+/// Internal: which side of the abort race in [_SourceState._hubGuarded] won.
+enum _HubStepState { done, failed, aborted }
+
+/// What a batch probe decided about one source.
+enum GroupProbeState {
+  /// Returned a real audio link; left enabled.
+  usable,
+
+  /// Could not serve a link, so it has been switched off.
+  disabled,
+
+  /// Nothing was proven — no test song could be fetched, or the script never
+  /// answered. Its enabled state is untouched.
+  skipped,
+}
+
+/// One line of a batch probe result.
+class GroupProbeReport {
+  const GroupProbeReport({
+    required this.name,
+    required this.state,
+    required this.detail,
+  });
+
+  final String name;
+  final GroupProbeState state;
+  final String detail;
+}
+
+/// Outcome of [SourceState.probeGroup]: what was judged, and how much of the run
+/// the stop button cut short.
+class GroupProbeOutcome {
+  const GroupProbeOutcome({
+    required this.group,
+    required this.reports,
+    this.cancelled = false,
+    this.error,
+  });
+
+  final String group;
+  final List<GroupProbeReport> reports;
+  final bool cancelled;
+
+  /// Set when the batch refused to start (another run, or an empty group).
+  final String? error;
+
+  List<GroupProbeReport> get usable =>
+      reports.where((report) => report.state == GroupProbeState.usable).toList(growable: false);
+
+  List<GroupProbeReport> get disabled =>
+      reports.where((report) => report.state == GroupProbeState.disabled).toList(growable: false);
+
+  List<GroupProbeReport> get skipped =>
+      reports.where((report) => report.state == GroupProbeState.skipped).toList(growable: false);
 }
