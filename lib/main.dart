@@ -38,8 +38,20 @@ Future<void> main() async {
     config: const AudioServiceConfig(
       androidNotificationChannelId: 'com.flm.music.channel.audio',
       androidNotificationChannelName: 'flm playback',
-      androidNotificationOngoing: true,
-      androidStopForegroundOnPause: true,
+      // Keep the foreground service — and the wake lock that comes with it — up
+      // through *every* pause. audio_service leaves the foreground state and
+      // releases the wake lock each time `playing` falls to false, which on
+      // Android happens at track boundaries without a prepared standby, during
+      // the silence watchdog's re-arm, and while a notification briefly steals
+      // audio focus. Even a momentary demotion lets the OEM freezer kill the
+      // process, and that is what users experience as background playback
+      // cutting out.
+      //
+      // `androidNotificationOngoing` is deliberately left at its default: the
+      // plugin asserts that the two options cannot be combined, and it has
+      // nothing to do here — a notification from a service that stays in the
+      // foreground state is already non-dismissible.
+      androidStopForegroundOnPause: false,
     ),
   );
 

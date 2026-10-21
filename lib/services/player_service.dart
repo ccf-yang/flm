@@ -10,6 +10,62 @@ class FlmAudioHandler extends BaseAudioHandler {
 
   final FlmPlayerService _service;
 
+  /// Headset and car-kit transport keys arrive on Android as *separate*
+  /// `MediaButton.media` events: the platform layer forwards every
+  /// `KEYCODE_HEADSETHOOK` / `KEYCODE_MEDIA_PLAY_PAUSE` `ACTION_DOWN` verbatim
+  /// and does no multi-click detection, so the inherited behaviour turns a
+  /// double tap into "pause, then play again" and the track never changes.
+  /// Clicks are therefore tallied over a short window — 1 = play/pause,
+  /// 2 = next, 3 = previous — which is what earbuds and steering wheels are
+  /// expected to do. Only the headset press is delayed by that window; the
+  /// notification and lock-screen buttons go through [play], [pause] and
+  /// [skipToNext] directly and stay instant.
+  static const Duration _multiClickWindow = Duration(milliseconds: 400);
+
+  Timer? _clickTimer;
+  int _clickCount = 0;
+
+  @override
+  Future<void> click([MediaButton button = MediaButton.media]) async {
+    if (button != MediaButton.media) {
+      // A dedicated next/previous key is unambiguous: act on it at once and
+      // discard whatever the tally was holding.
+      _resetClickTally();
+      await super.click(button);
+      return;
+    }
+    // Capping at three keeps a fourth click as the start of a new gesture
+    // instead of silently repeating "previous".
+    if (_clickCount < 3) _clickCount++;
+    _clickTimer?.cancel();
+    _clickTimer = Timer(_multiClickWindow, _flushClickTally);
+  }
+
+  void _resetClickTally() {
+    _clickTimer?.cancel();
+    _clickTimer = null;
+    _clickCount = 0;
+  }
+
+  void _flushClickTally() {
+    final count = _clickCount;
+    _clickTimer = null;
+    _clickCount = 0;
+    if (count == 0) return;
+    final action = switch (count) {
+      2 => skipToNext,
+      // Three clicks is the conventional "previous" gesture.
+      3 => skipToPrevious,
+      // One press keeps its platform meaning: toggle. Reading the player rather
+      // than the published state also covers "stopped, wake the last track up
+      // again".
+      _ => () => _service.player.playing ? pause() : play(),
+    };
+    // The controller owns error reporting; a failing command must not surface
+    // as an uncaught asynchronous error out of this timer.
+    unawaited(action().catchError((Object _) {}));
+  }
+
   @override
   Future<void> play() {
     // Resuming from the lock screen / control centre has to run through the
