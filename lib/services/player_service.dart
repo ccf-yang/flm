@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:audio_service/audio_service.dart';
 import 'package:just_audio/just_audio.dart';
@@ -19,7 +20,8 @@ class FlmAudioHandler extends BaseAudioHandler {
   /// 2 = next, 3 = previous — which is what earbuds and steering wheels are
   /// expected to do. Only the headset press is delayed by that window; the
   /// notification and lock-screen buttons go through [play], [pause] and
-  /// [skipToNext] directly and stay instant.
+  /// [skipToNext] directly and stay instant. iOS keeps its own gesture handling
+  /// untouched.
   static const Duration _multiClickWindow = Duration(milliseconds: 400);
 
   Timer? _clickTimer;
@@ -27,6 +29,10 @@ class FlmAudioHandler extends BaseAudioHandler {
 
   @override
   Future<void> click([MediaButton button = MediaButton.media]) async {
+    if (!Platform.isAndroid) {
+      await super.click(button);
+      return;
+    }
     if (button != MediaButton.media) {
       // A dedicated next/previous key is unambiguous: act on it at once and
       // discard whatever the tally was holding.
