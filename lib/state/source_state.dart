@@ -56,6 +56,10 @@ class SourceState extends ChangeNotifier {
   /// unmounted when a new source pushes past the cap.
   static const int _maxLiveEngines = 8;
 
+  /// Live sandboxes allowed right now: the cap above, plus one per concurrent
+  /// batch worker while a scan or probe is running (see [_beginHubRun]).
+  int _liveEngineCap = _maxLiveEngines;
+
   final CustomSourceRepository repository;
   final HttpBridge http;
   final AppState appState;
@@ -99,14 +103,25 @@ class SourceState extends ChangeNotifier {
   /// platform a previously imported script claimed ([_hubEntryFor]).
   List<HubSourceEntry>? _hubIndex;
 
-  /// One source must not hold up the whole batch: a script whose sandbox never
-  /// answers is reported as *not judged* rather than being switched off, because
-  /// the timeout says nothing about whether the link it would return is alive.
-  static const Duration _groupProbeDeadline = Duration(seconds: 40);
+  /// Sandbox ids a running batch is working on. They are exempt from eviction
+  /// for exactly as long as they are being probed: without that, a second worker
+  /// mounting its own sandbox could unmount the one the first is mid-resolve on.
+  final Set<String> _pinned = <String>{};
+
+  /// How many sources the current batch has in flight, and how long one source
+  /// may take. Both come from the user's 探测设置 when the run starts and are
+  /// read from here so the progress line can show them.
+  int _hubWorkers = 1;
+  Duration _hubBudget = const Duration(seconds: 30);
 
   /// A probe needs a real song per platform; the first search result is cached
   /// so a 20-candidate scan only pays for the search once per platform.
   final Map<String, Song?> _hubTestSongs = <String, Song?>{};
+
+  /// The search that is currently filling [_hubTestSongs] for a platform. Workers
+  /// start at the same moment, so without this two of them would search the same
+  /// platform twice and the batch would pay for a slow search once per worker.
+  final Map<String, Future<Song?>> _testSongRequests = <String, Future<Song?>>{};
 
   /// Ask the running batch — a hub scan or a group probe — to stop.
   void cancelHubScan() {
@@ -119,12 +134,18 @@ class SourceState extends ChangeNotifier {
   }
 
   void _beginHubRun(String initialStatus) {
+    final settings = appState.settings;
+    _hubWorkers = settings.probeConcurrencyClamped;
+    _hubBudget = settings.probeDeadline;
     hubWorking = true;
     _hubCancelRequested = false;
     _hubAbort = Completer<void>();
     hubDone = 0;
     hubTotal = 0;
     hubStatus = initialStatus;
+    // Every worker holds its own sandbox, so the pool that is used while a batch
+    // runs is as much larger as the concurrency the user asked for.
+    _liveEngineCap = _maxLiveEngines + _hubWorkers;
     notifyListeners();
   }
 
@@ -134,38 +155,132 @@ class SourceState extends ChangeNotifier {
     hubStatus = '';
     hubDone = 0;
     hubTotal = 0;
+    _pinned.clear();
+    _testSongRequests.clear();
+    _liveEngineCap = _maxLiveEngines;
     notifyListeners();
   }
 
-  /// Run a long step while a batch is allowed to be abandoned.
+  /// Run a long step while a batch is allowed to be abandoned, optionally giving
+  /// up on it after [budget].
   ///
   /// Futures cannot be cancelled, so checking [_hubCancelRequested] only between
   /// candidates made one press wait out whatever the current candidate was busy
-  /// with — up to two 25 s 取链 attempts, or a script that never answers at all.
-  /// That is why 停止 felt dead. The step is raced against the abort signal
-  /// instead, so a press returns the batch immediately. The abandoned step keeps
-  /// running to completion in the background; its result and any late failure are
-  /// drained on purpose, otherwise a script that finally throws after the user
-  /// walked away would surface as an uncaught asynchronous error.
-  Future<T> _hubGuarded<T>(Future<T> Function() step) async {
+  /// with — up to two 取链 attempts, or a script that never answers at all. That
+  /// is why 停止 felt dead. The step is raced against the abort signal instead, so
+  /// a press returns the batch immediately. The abandoned step keeps running to
+  /// completion in the background; its result and any late failure are drained on
+  /// purpose, otherwise a script that finally throws after the user walked away
+  /// would surface as an uncaught asynchronous error.
+  ///
+  /// The timeout is a third racer for the same reason: [Future.timeout] would left
+  /// a script that answers after its deadline throwing into a future nobody
+  /// listens to anymore. A source that runs out of budget is left exactly as it
+  /// was — a slow answer says nothing about whether the link is alive, and the
+  /// batch only ever switches off scripts that proved they cannot serve one.
+  Future<T> _hubGuarded<T>(
+    Future<T> Function() step, {
+    Duration? budget,
+  }) async {
     final abort = _hubAbort;
-    if (abort == null) return step();
     final work = step();
-    final raced = await Future.any<List<Object?>>(<Future<List<Object?>>>[
+    final tags = <Future<List<Object?>>>[
       work.then<List<Object?>>(
         (value) => <Object?>[_HubStepState.done, value, null],
         onError: (Object error) => <Object?>[_HubStepState.failed, null, error],
       ),
-      abort.future.then<List<Object?>>(
+    ];
+    if (abort != null) {
+      tags.add(abort.future.then<List<Object?>>(
         (_) => <Object?>[_HubStepState.aborted, null, null],
-      ),
-    ]);
+      ));
+    }
+    Timer? timer;
+    if (budget != null) {
+      final deadline = Completer<void>();
+      timer = Timer(budget, () {
+        if (!deadline.isCompleted) deadline.complete();
+      });
+      tags.add(deadline.future.then<List<Object?>>(
+        (_) => <Object?>[_HubStepState.timedOut, null, null],
+      ));
+    }
+    final raced = await Future.any<List<Object?>>(tags);
+    timer?.cancel();
     if (raced[0] == _HubStepState.aborted) {
       unawaited(work.then<void>((_) {}, onError: (Object _) {}));
       throw const HubScanCancelled();
     }
+    if (raced[0] == _HubStepState.timedOut) {
+      unawaited(work.then<void>((_) {}, onError: (Object _) {}));
+      throw _HubProbeTimeout(budget!);
+    }
     if (raced[0] == _HubStepState.done) return raced[1] as T;
     throw raced[2]!;
+  }
+
+  /// Run [step] over [items] with at most [workers] of them in flight at once.
+  ///
+  /// Dart ships no helper for this shape, so the pool is a shared cursor: each
+  /// worker takes the next index until the list is empty, and a verdict is stored
+  /// in the slot of its own index rather than appended, so the result the user
+  /// reads still follows the order of the list on screen. [step] is expected to
+  /// classify its own failures; anything that still escapes ends the batch, which
+  /// is what 停止 does.
+  Future<void> _runPool<T>(
+    List<T> items,
+    int workers,
+    Future<void> Function(T item, int index) step,
+  ) async {
+    var next = 0;
+    Future<void> runner() async {
+      while (!_hubCancelRequested) {
+        final index = next++;
+        if (index >= items.length) return;
+        await step(items[index], index);
+      }
+    }
+
+    final count = workers < items.length ? workers : items.length;
+    await Future.wait(
+      List<Future<void>>.generate(
+        count < 1 ? 1 : count,
+        (_) => runner(),
+        growable: false,
+      ),
+    );
+  }
+
+  /// Values 探测设置 offers to the batch entry points, so the sheet can show what
+  /// the next run will use even while a run is already under way.
+  int get probeConcurrency => appState.settings.probeConcurrencyClamped;
+
+  int get probeTimeoutSeconds => appState.settings.probeTimeoutClamped;
+
+  /// Where the batch stands: the first line names the whole run, then each worker
+  /// announces what it picked up. With more than one worker the per-source line is
+  /// only the most recent start, so it says what it means rather than pretending
+  /// to be the one thing being tested.
+  String _hubScanIntro(bool selfProbe, int total) {
+    final mode = _hubWorkers > 1 ? '并发 $_hubWorkers 路' : '逐个';
+    final budget = _hubBudget.inSeconds;
+    if (selfProbe) {
+      return '共 $total 个候选，$mode实测取链（每个 ${budget}s 上限）…';
+    }
+    return '共 $total 个可用源，$mode取回脚本（每个 ${budget}s 上限）…';
+  }
+
+  String _hubActivity(bool selfProbe, String name) {
+    final action = selfProbe ? '实测' : '取回';
+    if (_hubWorkers <= 1) return '正在$action「$name」';
+    return '$action中：「$name」（$_hubWorkers 路并发）';
+  }
+
+  /// Per-取链-attempt share of the user's 探测超时: two attempts at most, with a
+  /// floor low settings cannot push under a search plus one resolve.
+  static Duration _attemptBudget(Duration budget) {
+    final half = (budget.inSeconds / 2).ceil();
+    return Duration(seconds: half < 8 ? 8 : half);
   }
 
   List<CustomSourceInfo> get sources => repository.sources;
@@ -377,12 +492,16 @@ class SourceState extends ChangeNotifier {
   }
 
   void _evictIfNeeded(String keepId) {
-    while (_slots.length >= _maxLiveEngines) {
+    while (_slots.length >= _liveEngineCap) {
       String? victimId;
       _SourceSlot? victim;
       for (final entry in _slots.entries) {
         if (entry.key == keepId || entry.key == appState.settings.activeSourceId) continue;
         if (_initializing.containsKey(entry.key)) continue;
+        // A batch worker is inside this sandbox right now; dropping it would make
+        // the source look dead when all that happened is that a neighbour needed
+        // the room.
+        if (_pinned.contains(entry.key)) continue;
         if (victim == null || entry.value.lastUsed.isBefore(victim.lastUsed)) {
           victim = entry.value;
           victimId = entry.key;
@@ -872,73 +991,121 @@ class SourceState extends ChangeNotifier {
               .toList(growable: false);
 
       hubTotal = targets.length;
-      hubStatus = selfProbe
-          ? '共 ${targets.length} 个候选，逐个实测取链…'
-          : '共 ${targets.length} 个可用源，正在取回脚本…';
+      hubStatus = _hubScanIntro(selfProbe, targets.length);
       notifyListeners();
 
-      for (final entry in targets) {
-        if (_hubCancelRequested) {
-          cancelled = true;
-          break;
-        }
-        hubStatus = '正在检测「${entry.name}」';
+      // Indexed rather than appended: several workers finish out of order, and the
+      // verdict sheet is far easier to read when it still matches the list on
+      // screen.
+      final verdicts = List<HubCandidateResult?>.filled(targets.length, null);
+      final picked = List<SourceSeed?>.filled(targets.length, null);
+      await _runPool(targets, _hubWorkers, (entry, index) async {
+        hubStatus = _hubActivity(selfProbe, entry.name);
         notifyListeners();
 
-        // `late` rather than nullable: every path that leaves the try block
-        // without a download either reports the failure or unwinds the whole
-        // scan, so the reads below are never reached unset — and a non-nullable
-        // local also survives being used inside a closure.
+        // The user's 探测超时 is the budget for the whole candidate, so the clock
+        // starts here and each step only gets what the previous one left.
+        final elapsed = Stopwatch()..start();
+        Duration left() {
+          final rest = _hubBudget - elapsed.elapsed;
+          return rest < Duration.zero ? Duration.zero : rest;
+        }
+
+        // `late` rather than nullable: every path that fails to download returns
+        // out of this worker, so the reads below are never reached unset — and a
+        // non-nullable local also survives being used inside a closure.
         late HubDownload download;
         try {
           download = await _hubGuarded(
             () => _hub.downloadFirst(entry.downloadCandidates),
+            budget: _hubBudget,
           );
         } on HubScanCancelled {
-          rethrow;
+          cancelled = true;
+          return;
         } catch (error) {
-          candidates.add(HubCandidateResult(
+          verdicts[index] = HubCandidateResult(
             entry: entry,
             ok: false,
-            detail: '脚本下载失败：$error',
-          ));
+            detail: error is _HubProbeTimeout
+                ? '脚本下载超时（${_hubBudget.inSeconds}s）'
+                : '脚本下载失败：$error',
+          );
           hubDone++;
           notifyListeners();
-          continue;
+          return;
         }
 
         final script = download.script;
         final scriptUrl = download.url;
         List<String> platforms;
-        String detail;
         if (selfProbe) {
-          final verdict = await _hubGuarded(
-            () => _probeHubCandidate(entry, script),
-          );
+          final remaining = left();
+          if (remaining <= Duration.zero) {
+            // The download alone used the budget: say so instead of starting a
+            // 实测 that is dead on arrival.
+            verdicts[index] = HubCandidateResult(
+              entry: entry,
+              ok: false,
+              detail: '取回脚本已用完 ${_hubBudget.inSeconds}s，未做实测',
+            );
+            hubDone++;
+            notifyListeners();
+            return;
+          }
+          HubCandidateResult verdict;
+          try {
+            verdict = await _hubGuarded(
+              () => _probeHubCandidate(entry, script),
+              budget: remaining,
+            );
+          } on HubScanCancelled {
+            cancelled = true;
+            return;
+          } on _HubProbeTimeout catch (timeout) {
+            verdicts[index] = HubCandidateResult(
+              entry: entry,
+              ok: false,
+              detail: '${timeout.message}，未导入',
+            );
+            hubDone++;
+            notifyListeners();
+            return;
+          } catch (error) {
+            verdicts[index] = HubCandidateResult(
+              entry: entry,
+              ok: false,
+              detail: '实测异常：$error',
+            );
+            hubDone++;
+            notifyListeners();
+            return;
+          }
           platforms = verdict.platforms;
-          detail = verdict.detail;
+          verdicts[index] = verdict;
         } else {
           platforms = entry.usablePlatforms;
-          detail = '${entry.platformSummary}（web 实测）';
+          verdicts[index] = HubCandidateResult(
+            entry: entry,
+            ok: platforms.isNotEmpty,
+            detail: '${entry.platformSummary}（web 实测）',
+            platforms: platforms,
+          );
         }
-
-        candidates.add(HubCandidateResult(
-          entry: entry,
-          ok: platforms.isNotEmpty,
-          detail: detail,
-          platforms: platforms,
-        ));
         if (platforms.isNotEmpty) {
-          seeds.add(SourceSeed(
+          picked[index] = SourceSeed(
             script: script,
             importUrl: scriptUrl,
             label: entry.name,
             platforms: platforms,
-          ));
+          );
         }
         hubDone++;
         notifyListeners();
-      }
+      });
+
+      candidates.addAll(verdicts.whereType<HubCandidateResult>());
+      seeds.addAll(picked.whereType<SourceSeed>());
     } on HubScanCancelled {
       // 停止 pressed: the verdicts gathered so far are still worth showing, and
       // nothing is written until the user approves the list.
@@ -982,6 +1149,8 @@ class SourceState extends ChangeNotifier {
       author: entry.author,
       version: entry.version,
     );
+    final budget = _hubBudget;
+    _pinned.add(temp.id);
     try {
       final slot = await _mountSlot(temp.id);
       try {
@@ -1013,6 +1182,10 @@ class SourceState extends ChangeNotifier {
         ...supported.where((name) => !preferred.contains(name)),
       ];
 
+      // A candidate gets two shots at most, so half of the user's 探测超时 is the
+      // price per attempt; the floor keeps a low setting from timing out before a
+      // search for the test song can even finish.
+      final attempt = _attemptBudget(budget);
       String lastError = '';
       for (final platform in order.take(2)) {
         // 停止 pressed while the first platform was being tested: give up at
@@ -1028,8 +1201,7 @@ class SourceState extends ChangeNotifier {
           // Low quality on purpose: a scan asks "does this script serve real
           // audio at all", and 128k is the cheapest link to prove it. The whole
           // attempt is deadline-bound so one hung script cannot stall the batch.
-          await _resolveVia(temp, song, quality: '128k')
-              .timeout(const Duration(seconds: 25));
+          await _resolveVia(temp, song, quality: '128k').timeout(attempt);
           _supported.putIfAbsent(temp.id, () => <String>{}).add(platform);
           return HubCandidateResult(
             entry: entry,
@@ -1039,7 +1211,7 @@ class SourceState extends ChangeNotifier {
             platforms: <String>[platform],
           );
         } on TimeoutException {
-          lastError = '${hubPlatformLabel(platform)} 取链超时（25s）';
+          lastError = '${hubPlatformLabel(platform)} 取链超时（${attempt.inSeconds}s）';
         } catch (error) {
           lastError = '$error';
         }
@@ -1051,14 +1223,26 @@ class SourceState extends ChangeNotifier {
         platforms: const <String>[],
       );
     } finally {
+      _pinned.remove(temp.id);
       _dropSlot(temp.id);
       _supported.remove(temp.id);
       notifyListeners();
     }
   }
 
-  Future<Song?> _testSongFor(String platform) async {
-    if (_hubTestSongs.containsKey(platform)) return _hubTestSongs[platform];
+  Future<Song?> _testSongFor(String platform) {
+    final cached = _hubTestSongs[platform];
+    if (_hubTestSongs.containsKey(platform)) return Future.value(cached);
+    // Several workers can ask for the same platform in the same instant. Sharing
+    // one search keeps a slow platform from costing the batch a search per worker.
+    final pending = _testSongRequests[platform];
+    if (pending != null) return pending;
+    final task = _searchTestSong(platform);
+    _testSongRequests[platform] = task;
+    return task.whenComplete(() => _testSongRequests.remove(platform));
+  }
+
+  Future<Song?> _searchTestSong(String platform) async {
     final engine = onlineEngine;
     Song? found;
     if (engine != null) {
@@ -1122,37 +1306,57 @@ class SourceState extends ChangeNotifier {
         error: '「${sourceGroupName(group)}」里还没有源',
       );
     }
-    _beginHubRun('正在逐个实测「${sourceGroupName(group)}」…');
+    _beginHubRun('「${sourceGroupName(group)}」共 ${targets.length} 个源，正在准备…');
 
     final reports = <GroupProbeReport>[];
     var cancelled = false;
     try {
       hubTotal = targets.length;
+      hubStatus = '「${sourceGroupName(group)}」共 ${targets.length} 个源，'
+          '${_hubWorkers > 1 ? '$_hubWorkers 路并发' : '逐个'}实测'
+          '（每个 ${_hubBudget.inSeconds}s 上限）…';
       notifyListeners();
-      for (final source in targets) {
-        if (_hubCancelRequested) {
-          cancelled = true;
-          break;
-        }
-        hubStatus = '正在探测「${source.name}」';
+
+      // Indexed, exactly as in scanHubSources: workers finish out of order and the
+      // sheet should still read like the list on screen.
+      final verdicts = List<GroupProbeReport?>.filled(targets.length, null);
+      await _runPool(targets, _hubWorkers, (source, index) async {
+        hubStatus = _hubWorkers > 1
+            ? '探测中：「${source.name}」（$_hubWorkers 路并发）'
+            : '正在探测「${source.name}」';
         notifyListeners();
-        GroupProbeReport? report;
+
+        // The slot this source is being tested in must survive while a neighbour's
+        // worker fills its own sandbox.
+        _pinned.add(source.id);
+        GroupProbeReport? judged;
+        // One budget per source: 取测试歌曲 uses part of it, 实测取链 gets the rest.
+        final elapsed = Stopwatch()..start();
+        Duration left() {
+          final rest = _hubBudget - elapsed.elapsed;
+          return rest < Duration.zero ? Duration.zero : rest;
+        }
+
         try {
           final song = await _hubGuarded(
-            () => _songForGroupProbe(source).timeout(_groupProbeDeadline),
+            () => _songForGroupProbe(source),
+            budget: _hubBudget,
           );
           if (song == null) {
-            report = GroupProbeReport(
+            judged = GroupProbeReport(
               name: source.name,
               state: GroupProbeState.skipped,
               detail: '拿不到测试歌曲，未做任何改动',
             );
           } else {
+            final remaining = left();
+            if (remaining <= Duration.zero) throw _HubProbeTimeout(_hubBudget);
             final probe = await _hubGuarded(
-              () => probeSource(source, song: song).timeout(_groupProbeDeadline),
+              () => probeSource(source, song: song),
+              budget: remaining,
             );
             if (probe.ok) {
-              report = GroupProbeReport(
+              judged = GroupProbeReport(
                 name: source.name,
                 state: GroupProbeState.usable,
                 detail: source.disabled
@@ -1160,14 +1364,14 @@ class SourceState extends ChangeNotifier {
                     : probe.headline,
               );
             } else if (probe.headline == '缺少在线歌曲') {
-              report = GroupProbeReport(
+              judged = GroupProbeReport(
                 name: source.name,
                 state: GroupProbeState.skipped,
                 detail: '没有可测试的歌曲，未做任何改动',
               );
             } else {
               await repository.setDisabled(source.id, true);
-              report = GroupProbeReport(
+              judged = GroupProbeReport(
                 name: source.name,
                 state: GroupProbeState.disabled,
                 detail: '${probe.headline}：${probe.detail}',
@@ -1176,26 +1380,32 @@ class SourceState extends ChangeNotifier {
           }
         } on HubScanCancelled {
           cancelled = true;
-        } on TimeoutException {
-          report = GroupProbeReport(
+          // Nothing to record: a press is not a verdict about this source.
+          return;
+        } on _HubProbeTimeout catch (timeout) {
+          judged = GroupProbeReport(
             name: source.name,
             state: GroupProbeState.skipped,
-            detail: '超过 ${_groupProbeDeadline.inSeconds}s 没有回应，未做任何改动',
+            detail: '${timeout.message}，未做任何改动',
           );
         } catch (error) {
+          // A source that throws while being asked for a link is a source that
+          // cannot serve one, so it goes the same way as a failed probe.
           await repository.setDisabled(source.id, true);
-          report = GroupProbeReport(
+          judged = GroupProbeReport(
             name: source.name,
             state: GroupProbeState.disabled,
             detail: '$error',
           );
+        } finally {
+          _pinned.remove(source.id);
         }
-        final judged = report;
-        if (judged != null) reports.add(judged);
+        verdicts[index] = judged;
         hubDone++;
         notifyListeners();
-        if (cancelled) break;
-      }
+      });
+
+      reports.addAll(verdicts.whereType<GroupProbeReport>());
     } finally {
       _endHubRun();
     }
@@ -1437,7 +1647,18 @@ class HubScanCancelled implements Exception {
 }
 
 /// Internal: which side of the abort race in [_SourceState._hubGuarded] won.
-enum _HubStepState { done, failed, aborted }
+enum _HubStepState { done, failed, aborted, timedOut }
+
+/// Internal: one source ran out of the user's 探测超时 while a batch was running.
+/// The batch turns it into a 未判定 verdict for that source and carries on with
+/// the others — see [GroupProbeState.skipped].
+class _HubProbeTimeout implements Exception {
+  const _HubProbeTimeout(this.budget);
+
+  final Duration budget;
+
+  String get message => '超过 ${budget.inSeconds}s 没有结果';
+}
 
 /// What a batch probe decided about one source.
 enum GroupProbeState {

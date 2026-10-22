@@ -70,6 +70,8 @@ class AppSettings {
     this.miniPlayerUseImageColor = true,
     this.debugEnabled = false,
     this.showPlatformFilter = true,
+    this.probeTimeoutSeconds = 30,
+    this.probeConcurrency = 3,
     List<String>? visibleSources,
   })  : searchHistory = searchHistory ?? <String>[],
         dislikedKeys = dislikedKeys ?? <String>[],
@@ -109,8 +111,20 @@ class AppSettings {
   bool debugEnabled;
   /// Whether 搜索 / 歌单 / 榜单 show the platform filter row at all.
   bool showPlatformFilter;
+  /// How long one source may take during batch detection (自动导入源 / 全部探测)
+  /// before it is written off as failing. Lower it for a quicker pass, raise it
+  /// for slow scripts on a poor connection.
+  int probeTimeoutSeconds;
+  /// How many sources batch detection works on at the same time.
+  int probeConcurrency;
   /// Platforms the user keeps as categories; order follows [kPlatformIds].
   List<String> visibleSources;
+
+  /// Batch detection limits, clamped so a hand-edited settings.json cannot make
+  /// the pass hang (way too long) or trash every source (way too short).
+  int get probeTimeoutClamped => probeTimeoutSeconds.clamp(8, 90);
+  int get probeConcurrencyClamped => probeConcurrency.clamp(1, 6);
+  Duration get probeDeadline => Duration(seconds: probeTimeoutClamped);
 
   /// The platform ids that take part in categorisation, always at least one.
   List<String> get platformIds {
@@ -228,6 +242,8 @@ class AppSettings {
       miniPlayerUseImageColor: json['miniPlayerUseImageColor'] != false,
       debugEnabled: json['debugEnabled'] == true,
       showPlatformFilter: json['showPlatformFilter'] != false,
+      probeTimeoutSeconds: (json['probeTimeoutSeconds'] as num?)?.toInt() ?? 30,
+      probeConcurrency: (json['probeConcurrency'] as num?)?.toInt() ?? 3,
       visibleSources: (json['visibleSources'] as List<dynamic>? ?? <dynamic>[])
           .map((item) => '$item')
           .where(kPlatformIds.contains)
@@ -262,6 +278,8 @@ class AppSettings {
         'miniPlayerUseImageColor': miniPlayerUseImageColor,
         'debugEnabled': debugEnabled,
         'showPlatformFilter': showPlatformFilter,
+        'probeTimeoutSeconds': probeTimeoutSeconds,
+        'probeConcurrency': probeConcurrency,
         'visibleSources': visibleSources,
       };
 }

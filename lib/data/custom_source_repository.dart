@@ -17,6 +17,10 @@ class CustomSourceRepository {
   final File _indexFile;
   final List<CustomSourceInfo> sources;
 
+  /// Batch detection disables sources from several workers at once, so writes
+  /// must not share the same `.tmp` path concurrently.
+  Future<void> _saveChain = Future<void>.value();
+
   static Future<CustomSourceRepository> load() async {
     final support = await getApplicationSupportDirectory();
     final dir = Directory(p.join(support.path, 'sources'));
@@ -40,7 +44,13 @@ class CustomSourceRepository {
     return CustomSourceRepository._(dir, indexFile, sources);
   }
 
-  Future<void> _saveIndex() async {
+  Future<void> _saveIndex() {
+    final task = _saveChain.then((_) => _writeIndex());
+    _saveChain = task.then<void>((_) {}, onError: (_) {});
+    return task;
+  }
+
+  Future<void> _writeIndex() async {
     final temp = File('${_indexFile.path}.tmp');
     await temp.writeAsString(
       jsonEncode(sources.map((source) => source.toJson()).toList()),
