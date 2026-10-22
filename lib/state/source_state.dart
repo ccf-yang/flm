@@ -1288,8 +1288,10 @@ class SourceState extends ChangeNotifier {
   /// playback waits for it before falling through to the next source.
   ///
   /// A source that could not be judged at all (no test song could be fetched for
-  /// any of its platforms, or the step timed out) keeps its current state: the
-  /// batch punishes broken scripts, not an app that had nothing to test them with.
+  /// any of its platforms) keeps its current state: the batch punishes broken
+  /// scripts, not an app that had nothing to test them with. Running out of the
+  /// user's 探测超时 is a different matter — a script that cannot answer within
+  /// the budget the user set is treated as unusable and gets disabled too.
   Future<GroupProbeOutcome> probeGroup(String group) async {
     if (hubWorking) {
       return GroupProbeOutcome(
@@ -1383,10 +1385,12 @@ class SourceState extends ChangeNotifier {
           // Nothing to record: a press is not a verdict about this source.
           return;
         } on _HubProbeTimeout catch (timeout) {
+          // 超时按「取不到链」处理：用户设定的预算内答不上来，就是不能用的源。
+          await repository.setDisabled(source.id, true);
           judged = GroupProbeReport(
             name: source.name,
-            state: GroupProbeState.skipped,
-            detail: '${timeout.message}，未做任何改动',
+            state: GroupProbeState.disabled,
+            detail: '${timeout.message}，已禁用',
           );
         } catch (error) {
           // A source that throws while being asked for a link is a source that
@@ -1650,8 +1654,8 @@ class HubScanCancelled implements Exception {
 enum _HubStepState { done, failed, aborted, timedOut }
 
 /// Internal: one source ran out of the user's 探测超时 while a batch was running.
-/// The batch turns it into a 未判定 verdict for that source and carries on with
-/// the others — see [GroupProbeState.skipped].
+/// The batch disables that source — a script that cannot answer inside the budget
+/// is treated as one that cannot serve a link — and carries on with the others.
 class _HubProbeTimeout implements Exception {
   const _HubProbeTimeout(this.budget);
 
@@ -1665,11 +1669,12 @@ enum GroupProbeState {
   /// Returned a real audio link; left enabled.
   usable,
 
-  /// Could not serve a link, so it has been switched off.
+  /// Could not serve a link, or never answered inside the timeout, so it has
+  /// been switched off.
   disabled,
 
-  /// Nothing was proven — no test song could be fetched, or the script never
-  /// answered. Its enabled state is untouched.
+  /// Nothing was proven — no test song could be fetched for any of its
+  /// platforms. Its enabled state is untouched.
   skipped,
 }
 
