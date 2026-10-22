@@ -910,6 +910,12 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   /// The next [count] upcoming tracks that are not cooling down, in the order an
   /// automatic advance would use them. The search window is wider than [count] so
   /// a dead song in front does not shorten the runway.
+  ///
+  /// An empty result means *every* candidate is cooling down, and the preloader
+  /// must then prepare nothing: planning a cooled track would re-fail and refresh
+  /// its cooldown on every pass, so a broken source would keep the whole queue
+  /// marked forever instead of letting the entries expire. The boundary still
+  /// tries the plain order through [_nextPlayableIndex].
   List<int> _upcomingUnmarked({int count = _planSearchWidth}) {
     final result = <int>[];
     for (final item in _upcoming(count: count + _unplayableUntil.length + 2)) {
@@ -918,11 +924,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       if (_isMarkedUnplayable(_queue[item])) continue;
       result.add(item);
     }
-    // The whole runway cooling down must not empty the standby forever: fall
-    // back to the plain order so the next boundary still tries to prepare
-    // something, instead of the queue silently ending because every song is
-    // marked.
-    return result.isEmpty ? _upcoming(count: count) : result;
+    return result;
   }
 
   /// Indices still to be played, in the order an automatic advance will actually
