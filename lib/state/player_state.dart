@@ -76,6 +76,10 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     // The standby item was swapped in at the track boundary and is already
     // producing sound; the controller only has to mirror the new index/state.
     service.onPromoted = _handlePromotedNext;
+    // The standby player rejected the planned link. Nothing else reports this:
+    // there is no promotion, no active-track error, and the current song is
+    // still playing fine, so the queue would just go silent at the boundary.
+    service.onPreloadFailed = _handleStandbyLoadFailed;
     service.onPlayError = (message) {
       debugLog?.record('播放器报错 ${_current?.name}', <String, Object?>{
         '错误': message,
@@ -105,6 +109,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       _resumeOnForeground = false;
     };
     sourceState.addListener(_onSourceChanged);
+    _lastActiveSourceId = sourceState.active?.id;
     WidgetsBinding.instance.addObserver(this);
     _progressTimer = Timer.periodic(const Duration(seconds: 5), (_) => _saveProgress());
     _watchdogTimer = Timer.periodic(const Duration(seconds: 5), (_) => _checkAudible());
@@ -193,6 +198,18 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   bool _advancing = false;
   final Map<String, _CachedUrl> _urlCache = <String, _CachedUrl>{};
   final Set<String> _preloading = <String>{};
+
+  /// Songs this pass could not be given a working link — every source failed to
+  /// resolve it, or the native player refused the standby load. Cooling them down
+  /// is what lets the preloader move on to the track *after* the dead one instead
+  /// of retrying the same song every eight seconds until the boundary arrives with
+  /// nothing prepared. Entries expire on their own and are dropped when the queue
+  /// or the play mode changes, or when the active source changes.
+  final Map<String, DateTime> _unplayableUntil = <String, DateTime>{};
+
+  /// Active source the cooldowns were earned against; a different script may well
+  /// serve the same songs, so the marks are dropped when it changes.
+  String? _lastActiveSourceId;
   DateTime _lastPreloadAttempt = DateTime.fromMillisecondsSinceEpoch(0);
   DateTime _lastLookaheadAttempt = DateTime.fromMillisecondsSinceEpoch(0);
 
@@ -202,6 +219,11 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   Song? _plannedNextSong;
   int _plannedNextIndex = -1;
   String? _plannedNextUrl;
+  /// How many standby loads in a row have been refused while trying to get one
+  /// track actually prepared. Each refusal re-plans and re-arms once, so without
+  /// a bound a whole queue of dead links would chain-load back to back.
+  int _armChain = 0;
+  static const int _maxArmChain = 3;
   /// Bumped whenever the queue/order changes, so an in-flight link resolve for
   /// the old plan is thrown away instead of arming the standby with a stale
   /// track.
@@ -233,6 +255,17 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   /// and the queue goes silent in the meantime. A generous lead plus several
   /// candidates keeps a ready URL for the whole background stretch.
   static const int _preloadLeadSeconds = 150;
+
+  /// How long a song stays out of the plan after a failed link or standby load.
+  /// Long enough that a dead source host is not paid for again on every track,
+  /// short enough that a song lost to one network blip is back on the next pass
+  /// through the queue.
+  static const Duration _unplayableCooldown = Duration(minutes: 10);
+
+  /// How many upcoming tracks one prewarm pass will walk while skipping the
+  /// cooled-down ones. Deeper than one so a single dead song cannot leave the
+  /// standby empty for the whole track.
+  static const int _planSearchWidth = 3;
 
   /// A resolve started while backgrounded is waiting on frozen JavaScript, so cap
   /// how long an advance blocks on it. Returning to the foreground restarts the
@@ -460,6 +493,16 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       _silentHeals = 0;
     }
     _watchPosition = position;
+
+    // Nothing is prepared for the boundary: try again now, even outside the
+    // 150-second lead window. Behind the lock screen this is the only place that
+    // notices a dead "next" early enough for the runway to walk past it and arm a
+    // later track before the current one ends — which is what keeps a background
+    // session playing instead of stopping on the first song no source can serve.
+    // [_preloadNext] throttles itself, so a healthy queue costs one cheap check.
+    if (!service.hasPreparedNext && !_advancing) {
+      unawaited(_preloadNext());
+    }
 
     final quietFor = now.difference(_lastProgressChangeAt);
     final stalled = !advanced && quietFor > _noProgressWindow;
@@ -716,6 +759,9 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       _statusText = null;
       _errorText = null;
       _autoSkips = 0;
+      // This song just reached the native player, so any earlier "can't get a
+      // link for it" verdict is obsolete — the automatic planner may use it again.
+      _unplayableUntil.remove(_songKey(song));
       _lastProgressChangeAt = DateTime.now();
       final actualDuration = service.player.duration ?? service.duration;
       debugLog?.record('播放成功 ${song.name}', <String, Object?>{
@@ -780,6 +826,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       // cannot resolve anything, so only a track whose link is already cached
       // counts as playable there — that is what keeps a background session
       // running instead of dying on the first unresolvable song.
+      if (!song.isLocal) _markUnplayable(song, _friendlyError(error));
       final advance = _nextPlayableIndex();
       if (advance != null &&
           !_userPaused &&
@@ -833,6 +880,51 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     return cached != null && cached.expiresAt.isAfter(DateTime.now());
   }
 
+  /// Whether [song] is cooling down after a failed link or standby load.
+  bool _isMarkedUnplayable(Song song) {
+    final key = _songKey(song);
+    final until = _unplayableUntil[key];
+    if (until == null) return false;
+    if (until.isAfter(DateTime.now())) return true;
+    _unplayableUntil.remove(key);
+    return false;
+  }
+
+  /// Takes [song] out of the plan for [_unplayableCooldown].
+  ///
+  /// Only called when a resolve could honestly have succeeded: behind the lock
+  /// screen with a frozen WebView, or with no source enabled at all, a failure
+  /// says nothing about the song, and cooling it down would empty the queue out
+  /// one track at a time on a cause the song is not responsible for.
+  void _markUnplayable(Song song, String reason) {
+    if (!sourceState.hasActiveSource) return;
+    if (!_appInForeground && !sourceState.canResolveInBackground) return;
+    _unplayableUntil[_songKey(song)] = DateTime.now().add(_unplayableCooldown);
+    debugLog?.record('暂不可播 ${song.name}', <String, Object?>{
+      '原因': reason,
+      '冷却': '${_unplayableCooldown.inMinutes}分钟',
+      '前台': _appInForeground,
+    });
+  }
+
+  /// The next [count] upcoming tracks that are not cooling down, in the order an
+  /// automatic advance would use them. The search window is wider than [count] so
+  /// a dead song in front does not shorten the runway.
+  List<int> _upcomingUnmarked({int count = _planSearchWidth}) {
+    final result = <int>[];
+    for (final item in _upcoming(count: count + _unplayableUntil.length + 2)) {
+      if (result.length >= count) break;
+      if (item < 0 || item >= _queue.length) continue;
+      if (_isMarkedUnplayable(_queue[item])) continue;
+      result.add(item);
+    }
+    // The whole runway cooling down must not empty the standby forever: fall
+    // back to the plain order so the next boundary still tries to prepare
+    // something, instead of the queue silently ending because every song is
+    // marked.
+    return result.isEmpty ? _upcoming(count: count) : result;
+  }
+
   /// Indices still to be played, in the order an automatic advance will actually
   /// use them. Random mode used to re-roll at the moment of switching, so the
   /// links that had been pre-fetched belonged to different tracks and a
@@ -872,10 +964,15 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   int? _nextPlayableIndex() {
     final indices = _upcoming(count: 3);
     if (indices.isEmpty) return null;
+    // Skip the songs this pass already gave up on. When the whole window is
+    // cooling down the plain order is used again, rather than telling the user
+    // the queue has finished.
+    final unmarked = _upcomingUnmarked(count: 3);
+    final choices = unmarked.isEmpty ? indices : unmarked;
     if (_appInForeground || sourceState.canResolveInBackground) {
-      return indices.first;
+      return choices.first;
     }
-    for (final item in indices) {
+    for (final item in choices) {
       final song = _queue[item];
       if (song.isLocal || _hasUsableCache(song)) return item;
     }
@@ -884,7 +981,12 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Forget the decided order after the queue, the position or the play mode
   /// changed. [_upcoming] repopulates it on the next call.
-  void _invalidatePlan() => _nextPlan = <int>[];
+  void _invalidatePlan() {
+    _nextPlan = <int>[];
+    // A new queue or a new play order is new evidence: every song gets a clean
+    // pass instead of inheriting the last one's cooldowns.
+    _unplayableUntil.clear();
+  }
 
   /// After the index moved, keep whatever is left of the plan that still applies
   /// so an already pre-fetched link is not thrown away.
@@ -995,6 +1097,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     _plannedNextSong = null;
     _plannedNextIndex = -1;
     _plannedNextUrl = null;
+    _armChain = 0;
     unawaited(service.clearPreload());
   }
 
@@ -1017,7 +1120,8 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
         plannedSong != null &&
         plannedUrl != null &&
         _queue[plannedIndex].id == plannedSong.id &&
-        _queue[plannedIndex].source == plannedSong.source) {
+        _queue[plannedIndex].source == plannedSong.source &&
+        !_isMarkedUnplayable(plannedSong)) {
       // Already decided and resolved; `_armPreparedNext` only has to make sure
       // the standby is (or will be) loaded. A local path never expires; a
       // remote link is only reused while it is loaded or still cached.
@@ -1034,59 +1138,69 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       _plannedNextUrl = null;
     }
 
-    final upcoming = _upcoming(count: 1);
-    if (upcoming.isEmpty) return;
-    final nextIndex = upcoming.first;
-    if (nextIndex < 0 || nextIndex >= _queue.length) return;
-    final song = _queue[nextIndex];
-    if (appState.isDisliked(song)) return;
+    // Walk the runway until something can actually be prepared. A song no source
+    // can serve must not leave the standby empty — that is exactly what makes the
+    // queue go silent at the boundary until the app is opened again.
+    for (final nextIndex in _upcomingUnmarked(count: _planSearchWidth)) {
+      if (_disposed) return;
+      if (nextIndex < 0 || nextIndex >= _queue.length) continue;
+      final song = _queue[nextIndex];
+      if (appState.isDisliked(song)) continue;
 
-    if (song.isLocal) {
-      final path = song.localPath;
-      if (path == null || path.isEmpty) return;
-      _plannedNextSong = song;
-      _plannedNextIndex = nextIndex;
-      _plannedNextUrl = path;
-      return;
-    }
+      if (song.isLocal) {
+        final path = song.localPath;
+        if (path == null || path.isEmpty) continue;
+        _plannedNextSong = song;
+        _plannedNextIndex = nextIndex;
+        _plannedNextUrl = path;
+        return;
+      }
 
-    final now = DateTime.now();
-    final key = _songKey(song);
-    final cached = _urlCache[key];
-    if (cached != null && cached.expiresAt.isAfter(now)) {
-      _plannedNextSong = song;
-      _plannedNextIndex = nextIndex;
-      _plannedNextUrl = cached.url;
-      // Keep filling the cache for the tracks after this one while JavaScript
-      // still runs.
-      unawaited(_prefetchLookahead());
-      return;
-    }
+      final key = _songKey(song);
+      final cached = _urlCache[key];
+      if (cached != null && cached.expiresAt.isAfter(DateTime.now())) {
+        _plannedNextSong = song;
+        _plannedNextIndex = nextIndex;
+        _plannedNextUrl = cached.url;
+        // Keep filling the cache for the tracks after this one while JavaScript
+        // still runs.
+        unawaited(_prefetchLookahead());
+        return;
+      }
 
-    if (!sourceState.hasActiveSource) return;
-    if (!_preloading.add(key)) return;
-    final epoch = _preloadEpoch;
-    try {
-      final resolved = await sourceState.resolveMusicUrlAutoSwitch(
-        song,
-        background: !_appInForeground,
-      );
-      if (_disposed || epoch != _preloadEpoch) return;
-      final url = '${resolved['url'] ?? ''}';
-      if (url.isEmpty) return;
-      _cacheUrl(key, url);
-      _plannedNextSong = song;
-      _plannedNextIndex = nextIndex;
-      _plannedNextUrl = url;
-      debugLog?.record('预热下一首 ${song.name}', <String, Object?>{
-        '队列位置': nextIndex,
-        '前台': _appInForeground,
-      });
-      unawaited(_prefetchLookahead());
-    } catch (_) {
-      // Best effort; the periodic preload retries it.
-    } finally {
-      _preloading.remove(key);
+      if (!sourceState.hasActiveSource) return;
+      if (!_preloading.add(key)) return;
+      final epoch = _preloadEpoch;
+      try {
+        final resolved = await sourceState.resolveMusicUrlAutoSwitch(
+          song,
+          background: !_appInForeground,
+        );
+        if (_disposed || epoch != _preloadEpoch) return;
+        final url = '${resolved['url'] ?? ''}';
+        if (url.isEmpty) {
+          _markUnplayable(song, '所有源都没有返回播放链接');
+          continue;
+        }
+        _cacheUrl(key, url);
+        _plannedNextSong = song;
+        _plannedNextIndex = nextIndex;
+        _plannedNextUrl = url;
+        debugLog?.record('预热下一首 ${song.name}', <String, Object?>{
+          '队列位置': nextIndex,
+          '前台': _appInForeground,
+          '本轮已跳过': _unplayableUntil.length,
+        });
+        unawaited(_prefetchLookahead());
+        return;
+      } catch (error) {
+        if (_disposed || epoch != _preloadEpoch) return;
+        // Nobody could serve this song, so cool it down and try the one behind it
+        // inside this same pass instead of waiting for the next position tick.
+        _markUnplayable(song, _friendlyError(error));
+      } finally {
+        _preloading.remove(key);
+      }
     }
   }
 
@@ -1105,6 +1219,35 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     } else {
       unawaited(service.preloadUrl(url));
     }
+  }
+
+  /// The standby refused the link we planned for the next track.
+  ///
+  /// This is the background case that used to stall the queue: the current song
+  /// is still audible, so no error reaches [_handlePlayerError] and no boundary
+  /// has happened yet — without this the standby simply stays empty and the
+  /// queue goes silent as soon as the track ends. Mark the song and immediately
+  /// plan and arm the one behind it, bounded so a queue of dead links cannot
+  /// chain-load forever.
+  void _handleStandbyLoadFailed(String url, String error) {
+    if (_disposed) return;
+    if (_plannedNextUrl != url) return;
+    final song = _plannedNextSong;
+    if (song == null) return;
+    _markUnplayable(song, '备用播放器拒绝加载：${_friendlyError(error)}');
+    _plannedNextSong = null;
+    _plannedNextIndex = -1;
+    _plannedNextUrl = null;
+    if (_armChain >= _maxArmChain) {
+      debugLog?.record('下一首连续装填失败，暂停顺延', <String, Object?>{
+        '已试': _armChain,
+        '前台': _appInForeground,
+        '最后错误': _friendlyError(error),
+      });
+      return;
+    }
+    _armChain++;
+    unawaited(_warmNextLink().then((_) => _armPreparedNext()));
   }
 
   /// Resolve the links of the tracks *after* the prepared next one while the
@@ -1126,6 +1269,9 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       if (index < 0 || index >= _queue.length) continue;
       final song = _queue[index];
       if (song.isLocal || appState.isDisliked(song)) continue;
+      // Cooling-down tracks are left alone: they get another chance through the
+      // plan, and re-resolving them here would only burn the source's budget.
+      if (_isMarkedUnplayable(song)) continue;
       final key = _songKey(song);
       final cached = _urlCache[key];
       if (cached != null &&
@@ -1142,14 +1288,21 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
         );
         if (_disposed || epoch != _preloadEpoch) return;
         final url = '${resolved['url'] ?? ''}';
-        if (url.isEmpty) continue;
+        if (url.isEmpty) {
+          _markUnplayable(song, '所有源都没有返回播放链接');
+          continue;
+        }
         _cacheUrl(key, url);
         debugLog?.record('预取链接成功 ${song.name}', <String, Object?>{
           '队列位置': index,
           '有效期': '${_urlTtl.inMinutes}分钟',
         });
-      } catch (_) {
-        // Preloading is best effort.
+      } catch (error) {
+        // Preloading is best effort, but a song no source can serve is worth
+        // remembering: the deeper the runway, the less often the preloader has
+        // to retry a dead track while the screen is locked.
+        if (_disposed || epoch != _preloadEpoch) return;
+        _markUnplayable(song, _friendlyError(error));
       } finally {
         _preloading.remove(key);
       }
@@ -1166,6 +1319,10 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     _lastPreloadAttempt = now;
+    // This is the periodic pass, so it owns the retry pacing: give a burst of
+    // standby reloads a fresh budget here rather than letting the failure
+    // handler chain on its own forever.
+    _armChain = 0;
     await _warmNextLink();
     if (_disposed) return;
     _armPreparedNext();
@@ -1192,6 +1349,17 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
         '错误': message,
         '前台': _appInForeground,
       });
+      // The link is dead and this song has used up its retries. Sitting here is
+      // what looked like "the queue stops behind the lock screen until the app is
+      // opened": cool the song down and move on, bounded by the same round limit
+      // the load path uses so a wholly unplayable queue cannot loop.
+      _urlCache.remove(_songKey(song));
+      _markUnplayable(song, _friendlyError(message));
+      if (_autoSkips < _queue.length - 1) {
+        _autoSkips++;
+        _playErrorAttempts = 0;
+        unawaited(next(auto: true));
+      }
       return;
     }
     _playErrorAttempts++;
@@ -1687,6 +1855,8 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     _userPaused = false;
     _playErrorAttempts = 0;
     _autoSkips = 0;
+    // It is audible now, so its cooldown no longer applies.
+    _unplayableUntil.remove(_songKey(song));
     _watchPosition = service.player.position;
     _silentHeals = 0;
     _lastProgressChangeAt = DateTime.now();
@@ -1722,6 +1892,21 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   /// "tap to continue" state or from a foreground resume.
   void _onSourceChanged() {
     if (_disposed) return;
+    final activeId = sourceState.active?.id;
+    if (activeId != _lastActiveSourceId) {
+      _lastActiveSourceId = activeId;
+      // The cooling-down verdicts were earned against the previous script. A
+      // different source may well serve the very same songs, so let every track
+      // compete again instead of skipping them for ten minutes.
+      if (_unplayableUntil.isNotEmpty) {
+        debugLog?.record('换源，清除不可播标记', <String, Object?>{
+          '数量': _unplayableUntil.length,
+          '新源': sourceState.active?.name,
+        });
+      }
+      _unplayableUntil.clear();
+      _armChain = 0;
+    }
     if (_loading || willPlay || _userPaused) return;
     if (_errorText == null) return;
     final song = _current;
@@ -2050,6 +2235,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     service.onStopRequest = null;
     service.onCompleted = null;
     service.onPromoted = null;
+    service.onPreloadFailed = null;
     service.onExternalPause = null;
     service.onPlayError = null;
     super.dispose();
