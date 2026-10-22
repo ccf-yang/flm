@@ -401,7 +401,10 @@ class FlmPlayerService {
         // player; only the player that is still the standby may be armed.
         final stillStandby = !_disposed && identical(target, _standby);
         try {
-          await currentLoad(target);
+          // A dead host can leave `setUrl` awaiting a response forever, and this
+          // loop owns the only standby slot: without a bound the whole session
+          // would silently stop preparing anything after the first such link.
+          await currentLoad(target).timeout(const Duration(seconds: 30));
           if (stillStandby && generation == _preloadGeneration) {
             _standbyKey = currentKey;
             _standbyReady = true;
