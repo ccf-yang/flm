@@ -508,10 +508,10 @@ class CustomSourcesScreen extends StatelessWidget {
                   title: '单个源超时',
                   value: '${timeout}s',
                   hint: timeout <= 12
-                      ? '很激进：反应慢的脚本会被判成「未判定」，不会被禁用，但也不会导入。'
+                      ? '很激进：反应慢一点的脚本也会被判成取不到链，直接禁用。网络一般就别设这么低。'
                       : timeout >= 60
                           ? '很慢很稳：适合网络差、脚本反应迟的场合，整批耗时会拉长。'
-                          : '一个源最多花这么久；到点没结果的算「未判定」，保持原样。',
+                          : '一个源最多花这么久，到点还没结果的按「取不到链」处理，一并禁用。',
                   slider: Slider(
                     value: timeout.toDouble(),
                     min: 8,
