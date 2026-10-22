@@ -132,6 +132,11 @@ class FlmPlayerService {
   /// controller must only mirror its own state here — not reload anything.
   void Function()? onPromoted;
 
+  /// Called when the standby player **refused** a preload (expired link, body
+  /// that is not audio). The promotion never happened, so nothing else would
+  /// ever tell the controller that its planned next track cannot start.
+  void Function(String key, String error)? onPreloadFailed;
+
   /// System (lock screen / control centre) commands routed through the
   /// controller so they share the same state machine as the in-app buttons.
   Future<void> Function()? onPlayRequest;
@@ -226,6 +231,11 @@ class FlmPlayerService {
       _standby = old;
       _standbyKey = null;
       _standbyReady = false;
+      // The player that *held* this item is now the active one, and the player
+      // that became the standby has just finished. A preload still awaiting
+      // `setUrl` on the old standby must not arm it: its generation is dead, so
+      // a later boundary can never promote an already-consumed item.
+      _preloadGeneration++;
       _duration = next.duration ?? Duration.zero;
       _rebind();
       _broadcastState();
@@ -316,6 +326,7 @@ class FlmPlayerService {
       _standby = old;
       _standbyKey = null;
       _standbyReady = false;
+      _preloadGeneration++;
       _duration = next.duration ?? Duration.zero;
       _rebind();
       await old.pause();
@@ -380,36 +391,46 @@ class FlmPlayerService {
     _preloadBusy = true;
     var nextKey = key;
     var nextLoad = load;
-    while (!_disposed) {
-      final currentKey = nextKey;
-      final currentLoad = nextLoad;
-      final generation = ++_preloadGeneration;
-      try {
-        await currentLoad(_standby);
-        if (!_disposed && generation == _preloadGeneration) {
-          _standbyKey = currentKey;
-          _standbyReady = true;
+    try {
+      while (!_disposed) {
+        final currentKey = nextKey;
+        final currentLoad = nextLoad;
+        final generation = ++_preloadGeneration;
+        final target = _standby;
+        // A swap while this await is running turns the standby into the active
+        // player; only the player that is still the standby may be armed.
+        final stillStandby = !_disposed && identical(target, _standby);
+        try {
+          await currentLoad(target);
+          if (stillStandby && generation == _preloadGeneration) {
+            _standbyKey = currentKey;
+            _standbyReady = true;
+          }
+        } catch (error) {
+          if (stillStandby && generation == _preloadGeneration) {
+            _standbyKey = null;
+            _standbyReady = false;
+            // The controller planned this link; only it knows the song has to be
+            // dropped from the runway and replaced by a later track.
+            onPreloadFailed?.call(currentKey, '$error');
+          }
         }
-      } catch (_) {
-        if (generation == _preloadGeneration) {
+        final queuedKey = _pendingPreloadKey;
+        final queuedLoad = _pendingPreloadLoad;
+        _pendingPreloadKey = null;
+        _pendingPreloadLoad = null;
+        if (queuedKey != null && queuedLoad != null && queuedKey != currentKey) {
+          nextKey = queuedKey;
+          nextLoad = queuedLoad;
           _standbyKey = null;
           _standbyReady = false;
+        } else {
+          break;
         }
       }
-      final queuedKey = _pendingPreloadKey;
-      final queuedLoad = _pendingPreloadLoad;
-      _pendingPreloadKey = null;
-      _pendingPreloadLoad = null;
-      if (queuedKey != null && queuedLoad != null && queuedKey != currentKey) {
-        nextKey = queuedKey;
-        nextLoad = queuedLoad;
-        _standbyKey = null;
-        _standbyReady = false;
-      } else {
-        break;
-      }
+    } finally {
+      _preloadBusy = false;
     }
-    _preloadBusy = false;
   }
 
   /// Drop the prepared standby item. Called when the queue, the play mode or
