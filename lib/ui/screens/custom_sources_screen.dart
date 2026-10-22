@@ -46,6 +46,11 @@ class CustomSourcesScreen extends StatelessWidget {
                             state.importing ? null : () => _updateAll(context, state),
                       ),
                     IconBtn(
+                      icon: CupertinoIcons.slider_horizontal_3,
+                      tooltip: '探测设置',
+                      onTap: () => _probeSettings(context, state),
+                    ),
+                    IconBtn(
                       icon: CupertinoIcons.plus,
                       tooltip: '导入脚本',
                       onTap: () => _showImportMenu(context, state),
@@ -166,6 +171,23 @@ class CustomSourcesScreen extends StatelessWidget {
                             onTap: state.hubWorking
                                 ? null
                                 : () => _probeGroup(context, state, sourceGroupWeb),
+                          ),
+                        ),
+                      if (web.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(kGutter, 8, kGutter, 0),
+                          child: GestureDetector(
+                            onTap: () => _probeSettings(context, state),
+                            child: Text(
+                              '${_probePlanText(state)} · 点此调整',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                fontSize: 10.5,
+                                color: faintFor(context),
+                                decoration: TextDecoration.underline,
+                                decorationColor: faintFor(context),
+                              ),
+                            ),
                           ),
                         ),
 
@@ -432,9 +454,10 @@ class CustomSourcesScreen extends StatelessWidget {
     final confirmed = await flmConfirmDialog(
       context,
       title: '全部探测｜${sourceGroupName(group)}',
-      message: '逐个挂载脚本并实测取链，和手动一行行点探测一样；'
+      message: '挂载脚本并实测取链，和手动一行行点探测一样；'
           '取不到真实音频的源会被自动禁用，不再参与播放。'
-          '拿不到测试歌曲的源保持原样，中途也可以点停止。',
+          '拿不到测试歌曲的源保持原样，中途也可以点停止。\n'
+          '本次：${_probePlanText(state)}，可在右上角滑杆图标里调整。',
       cancelLabel: '取消',
       confirmLabel: '开始探测 $count 个',
     );
@@ -448,6 +471,98 @@ class CustomSourcesScreen extends StatelessWidget {
       return;
     }
     await _showGroupProbeResult(context, outcome);
+  }
+
+  /// How the next 一键探测 / 全部探测 will run, in one line.
+  String _probePlanText(SourceState state) {
+    final workers = state.probeConcurrency;
+    return '${workers > 1 ? '$workers 路并发' : '逐个探测'} · '
+        '每个源 ${state.probeTimeoutSeconds}s 上限';
+  }
+
+  /// 批量探测的超时与并发数.
+  ///
+  /// A batch reads both when it starts, so nothing here disturbs a run that is
+  /// already going — the sliders are about the next press, and the sheet says so.
+  Future<void> _probeSettings(BuildContext context, SourceState state) async {
+    final appState = state.appState;
+    await showFlmSheet<void>(
+      context,
+      title: '探测速度',
+      child: StatefulBuilder(
+        builder: (sheetContext, rebuild) {
+          final timeout = appState.settings.probeTimeoutClamped;
+          final workers = appState.settings.probeConcurrencyClamped;
+          return Padding(
+            padding: const EdgeInsets.fromLTRB(16, 6, 16, 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: <Widget>[
+                Text(
+                  '下一次「一键探测 / 全部探测」生效，正在跑的那批不受影响。',
+                  style: TextStyle(fontSize: 11, color: mutedFor(context)),
+                ),
+                const SizedBox(height: 14),
+                _ProbeSettingRow(
+                  title: '单个源超时',
+                  value: '${timeout}s',
+                  hint: timeout <= 12
+                      ? '很激进：反应慢的脚本会被判成「未判定」，不会被禁用，但也不会导入。'
+                      : timeout >= 60
+                          ? '很慢很稳：适合网络差、脚本反应迟的场合，整批耗时会拉长。'
+                          : '一个源最多花这么久；到点没结果的算「未判定」，保持原样。',
+                  slider: Slider(
+                    value: timeout.toDouble(),
+                    min: 8,
+                    max: 90,
+                    divisions: 41,
+                    label: '$timeout',
+                    activeColor: accentFor(context),
+                    onChanged: (next) {
+                      appState.update(
+                        (item) => item.probeTimeoutSeconds = next.round(),
+                      );
+                      rebuild(() {});
+                    },
+                  ),
+                ),
+                const SizedBox(height: 6),
+                _ProbeSettingRow(
+                  title: '同时探测几个源',
+                  value: '$workers 路',
+                  hint: workers == 1
+                      ? '一次只测一个：最省内存，也最慢。'
+                      : workers >= 5
+                          ? '每个并发都会开一个脚本沙箱，手机发烫或内存紧张就调低。'
+                          : '并发越高整批越快，代价是同时运行多个脚本沙箱。',
+                  slider: Slider(
+                    value: workers.toDouble(),
+                    min: 1,
+                    max: 6,
+                    divisions: 5,
+                    label: '$workers',
+                    activeColor: accentFor(context),
+                    onChanged: (next) {
+                      appState.update(
+                        (item) => item.probeConcurrency = next.round(),
+                      );
+                      rebuild(() {});
+                    },
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  '参考：30 个源、3 路并发、每个 20s，通常两三分钟跑完；'
+                  '调到 6 路并发约能快一半。',
+                  style: TextStyle(fontSize: 10.5, height: 1.6, color: faintFor(context)),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
   }
 
   /// The verdict list of a batch probe: what was switched off, what answered,
@@ -1181,6 +1296,61 @@ class _GroupHint extends StatelessWidget {
         text,
         style: TextStyle(fontSize: 11, height: 1.55, color: faintFor(context)),
       ),
+    );
+  }
+}
+
+/// One row of the 探测速度 sheet: what the setting is called, what it is set to,
+/// the slider, and — the part that actually decides it — what this value costs.
+class _ProbeSettingRow extends StatelessWidget {
+  const _ProbeSettingRow({
+    required this.title,
+    required this.value,
+    required this.hint,
+    required this.slider,
+  });
+
+  final String title;
+  final String value;
+  final String hint;
+  final Widget slider;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: <Widget>[
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.baseline,
+          textBaseline: TextBaseline.alphabetic,
+          children: <Widget>[
+            Expanded(
+              child: Text(
+                title,
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                  color: textFor(context),
+                ),
+              ),
+            ),
+            Text(
+              value,
+              style: TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.w800,
+                color: accentFor(context),
+                fontFeatures: const <FontFeature>[FontFeature.tabularFigures()],
+              ),
+            ),
+          ],
+        ),
+        slider,
+        Text(
+          hint,
+          style: TextStyle(fontSize: 10.5, height: 1.5, color: faintFor(context)),
+        ),
+      ],
     );
   }
 }

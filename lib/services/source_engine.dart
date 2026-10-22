@@ -300,7 +300,7 @@ class SourceEngine implements MusicSourceEngine {
         final requestKey = raw is String
             ? raw
             : '${payload['requestKey'] ?? ''}';
-        final id = _httpRequestIds.remove(requestKey) ?? requestKey.hashCode;
+        final id = _httpRequestIds.remove(requestKey) ?? -1;
         _http.cancel(id);
         break;
       case 'response':
@@ -332,7 +332,7 @@ class SourceEngine implements MusicSourceEngine {
 
   Future<void> _handleHttpRequest(String key, Map<String, dynamic> payload) async {
     final requestKey = '${payload['requestKey'] ?? ''}';
-    final id = requestKey.hashCode & 0x7fffffff;
+    final id = _http.nextRequestId();
     _httpRequestIds[requestKey] = id;
     // 音源脚本沙箱 (user_source.html) 的 handleNativeResponse 期望的字段是
     // { requestKey, error, response }，与 lx-music-mobile 的

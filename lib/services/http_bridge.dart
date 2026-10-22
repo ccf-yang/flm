@@ -27,6 +27,16 @@ class HttpBridge {
   final Dio _dio;
   final _CookieJar _cookies = _CookieJar();
   final Map<int, CancelToken> _cancelTokens = <int, CancelToken>{};
+  int _idSeq = 0;
+
+  /// Handle for one in-flight request, unique across every sandbox sharing this
+  /// bridge.
+  ///
+  /// Scripts mint their own `requestKey` inside their sandbox, and two sandboxes
+  /// asked at the same moment produce the same key — hashing the key into a bridge
+  /// id would let one worker cancel another worker's HTTP request, which a batch
+  /// probe would then read as "this source is dead".
+  int nextRequestId() => ++_idSeq;
 
   /// When non-null and its `enabled` flag is on, every request/response is
   /// mirrored here for the in-app debug page.

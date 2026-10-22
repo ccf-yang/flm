@@ -473,7 +473,7 @@ class JsSourceEngine implements MusicSourceEngine {
         final requestKey = rawData is String
             ? rawData
             : '${payload['requestKey'] ?? ''}';
-        final id = _httpRequestIds.remove(requestKey) ?? requestKey.hashCode;
+        final id = _httpRequestIds.remove(requestKey) ?? -1;
         _http.cancel(id);
         break;
       case 'response':
@@ -505,7 +505,7 @@ class JsSourceEngine implements MusicSourceEngine {
     final runtime = _runtime;
     if (runtime == null) return;
     final requestKey = '${payload['requestKey'] ?? ''}';
-    final id = requestKey.hashCode & 0x7fffffff;
+    final id = _http.nextRequestId();
     _httpRequestIds[requestKey] = id;
     dynamic result;
     String? failure;
