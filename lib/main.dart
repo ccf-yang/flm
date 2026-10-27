@@ -120,4 +120,9 @@ Future<void> main() async {
       child: const FlmApp(),
     ),
   );
+
+  // 开机自动后台检查源: armed after the UI is up, so the queue keeps playing from
+  // the sources already installed while a possibly minutes-long pass fetches,
+  // measures and prunes beside it.
+  sourceState.maybeScheduleAutoRefresh();
 }
