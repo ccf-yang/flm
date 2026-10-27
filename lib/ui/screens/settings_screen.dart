@@ -310,6 +310,35 @@ class SettingsScreen extends StatelessWidget {
                               );
                             },
                           ),
+                          _SwitchRow(
+                            icon: CupertinoIcons.bolt_circle_fill,
+                            label: '开机自动检查源',
+                            caption: _autoRefreshCaption(settings),
+                            value: settings.autoSourceRefresh,
+                            onChanged: (value) {
+                              if (value) {
+                                appState.update(
+                                  (settings) => settings.autoSourceRefresh = true,
+                                );
+                                // Turning it on is the user saying "do it now and
+                                // keep doing it"; the scheduler honours the same
+                                // 24h gate, so this only runs when one is due.
+                                sourceState.maybeScheduleAutoRefresh();
+                                return;
+                              }
+                              appState.update(
+                                (settings) => settings.autoSourceRefresh = false,
+                              );
+                            },
+                          ),
+                          if (sourceState.hubWorking)
+                            _SettingRow(
+                              icon: CupertinoIcons.dot_radiowaves_left_right,
+                              label: '正在后台更新源',
+                              caption: sourceState.hubStatus.isEmpty
+                                  ? '正在检测…'
+                                  : sourceState.hubStatus,
+                            ),
                           _SettingRow(
                             icon: CupertinoIcons.wrench,
                             label: '调试',
@@ -527,6 +556,23 @@ class SettingsScreen extends StatelessWidget {
     return '${active.name} · 已启用';
   }
 
+  /// 自动更新开关的说明：它做什么，以及上一次成功是什么时候。
+  ///
+  /// 只统计成功的整轮；中途停止或列表为空不写这个时间，所以下一轮启动还会再试。
+  String _autoRefreshCaption(AppSettings settings) {
+    const base = '启动后先用现有源播放，后台抓取、实测并淘汰坏源';
+    final last = settings.lastSourceRefreshAt;
+    if (last <= 0) return '$base · 还没成功更新过';
+    final age =
+        DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(last));
+    final when = age.inMinutes < 1
+        ? '刚刚'
+        : age.inHours < 24
+            ? '${age.inHours} 小时前'
+            : '${age.inDays} 天前';
+    return '$base · 上次成功 $when，超过 24 小时才再跑';
+  }
+
   String _platformSummary(AppSettings settings) {
     final ids = settings.platformIds;
     if (ids.length == AppSettings.kPlatformIds.length) return '全部平台';
@@ -688,7 +734,7 @@ class _IntroCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  '版本 1.0.6 · 安静的光，随处可听',
+                  '版本 1.0.7 · 安静的光，随处可听',
                   style: TextStyle(fontSize: 11, color: mutedFor(context)),
                 ),
               ],

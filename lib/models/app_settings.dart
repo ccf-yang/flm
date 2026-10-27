@@ -74,6 +74,8 @@ class AppSettings {
     this.showPlatformFilter = true,
     this.probeTimeoutSeconds = 30,
     this.probeConcurrency = 3,
+    this.autoSourceRefresh = true,
+    this.lastSourceRefreshAt = 0,
     List<String>? visibleSources,
   })  : searchHistory = searchHistory ?? <String>[],
         dislikedKeys = dislikedKeys ?? <String>[],
@@ -113,7 +115,7 @@ class AppSettings {
   bool debugEnabled;
   /// Whether 搜索 / 歌单 / 榜单 show the platform filter row at all.
   bool showPlatformFilter;
-  /// How long one source may take during batch detection (自动导入源 / 全部探测)
+  /// How long one source may take during batch detection (一键更新 / 全部探测)
   /// before it is written off as failing. Lower it for a quicker pass, raise it
   /// for slow scripts on a poor connection.
   int probeTimeoutSeconds;
@@ -131,6 +133,18 @@ class AppSettings {
   /// WiFi from cellular without a network-status plugin, which is why the switch
   /// is an explicit opt-out rather than a per-network rule.
   int runwayDepth;
+  /// Re-run the whole source update (web 抓取 → 本机实测 → 删除失效) by itself a
+  /// while after the app starts, so the list keeps itself fresh without a press.
+  ///
+  /// Playback never waits for it: the queue keeps using the sources that are
+  /// already installed, and the run only starts when the previous success is more
+  /// than a day old. It is an opt-out rather than a per-network rule because the
+  /// app cannot tell WiFi from cellular here.
+  bool autoSourceRefresh;
+  /// When the last fully successful update finished, in milliseconds since the
+  /// epoch; 0 means never. Cancelled or failed runs leave it alone, so the next
+  /// start tries again.
+  int lastSourceRefreshAt;
   /// Platforms the user keeps as categories; order follows [kPlatformIds].
   List<String> visibleSources;
 
@@ -264,6 +278,9 @@ class AppSettings {
       showPlatformFilter: json['showPlatformFilter'] != false,
       probeTimeoutSeconds: (json['probeTimeoutSeconds'] as num?)?.toInt() ?? 30,
       probeConcurrency: (json['probeConcurrency'] as num?)?.toInt() ?? 3,
+      autoSourceRefresh: json['autoSourceRefresh'] != false,
+      lastSourceRefreshAt:
+          (json['lastSourceRefreshAt'] as num?)?.toInt() ?? 0,
       visibleSources: (json['visibleSources'] as List<dynamic>? ?? <dynamic>[])
           .map((item) => '$item')
           .where(kPlatformIds.contains)
@@ -302,6 +319,8 @@ class AppSettings {
         'showPlatformFilter': showPlatformFilter,
         'probeTimeoutSeconds': probeTimeoutSeconds,
         'probeConcurrency': probeConcurrency,
+        'autoSourceRefresh': autoSourceRefresh,
+        'lastSourceRefreshAt': lastSourceRefreshAt,
         'visibleSources': visibleSources,
       };
 }

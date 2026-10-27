@@ -5,7 +5,8 @@ import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/widgets.dart' show WidgetsBinding;
+import 'package:flutter/widgets.dart'
+    show AppLifecycleState, WidgetsBinding, WidgetsBindingObserver;
 import 'package:webview_flutter/webview_flutter.dart';
 
 import '../data/custom_source_repository.dart';
@@ -43,7 +44,7 @@ class _SourceSlot {
   }
 }
 
-class SourceState extends ChangeNotifier {
+class SourceState extends ChangeNotifier with WidgetsBindingObserver {
   SourceState({
     required this.repository,
     required this.http,
@@ -84,8 +85,8 @@ class SourceState extends ChangeNotifier {
   bool importing = false;
   String? error;
 
-  /// Batch scan state, shown as a progress line on the 自定义源 page while the
-  /// hub list is being fetched, downloaded and (for 自动导入源) re-probed here.
+  /// Batch state, shown as a progress line on the 自定义源 page while the hub list
+  /// is being fetched, downloaded and then measured one source at a time.
   bool hubWorking = false;
   String hubStatus = '';
   int hubDone = 0;
@@ -113,6 +114,27 @@ class SourceState extends ChangeNotifier {
   /// read from here so the progress line can show them.
   int _hubWorkers = 1;
   Duration _hubBudget = const Duration(seconds: 30);
+
+  /// How many published scripts one update pulls at most. The hub's daily list is
+  /// longer, but every imported script is measured afterwards, and measuring
+  /// dozens of them on a phone is a far longer call than anyone waited for.
+  static const int _hubImportCap = 30;
+
+  /// A self-started update waits this long after launch — long enough that the
+  /// sources already installed have taken over playback — and runs at most once
+  /// per [interval] so a frequently-reopened app does not refetch the world.
+  static const Duration _autoRefreshLead = Duration(seconds: 60);
+  static const Duration _autoRefreshInterval = Duration(hours: 24);
+
+  Timer? _autoRefreshTimer;
+  bool _disposed = false;
+
+  /// Whether the app is on screen. Measuring a source runs the script inside a
+  /// WebView, and its JavaScript is frozen behind the lock screen — so a run that
+  /// drifts into the background is stopped rather than allowed to keep going,
+  /// because every measurement from there would time out and a timeout is recorded
+  /// as a dead source.
+  bool _foreground = true;
 
   /// A probe needs a real song per platform; the first search result is cached
   /// so a 20-candidate scan only pays for the search once per platform.
@@ -261,26 +283,14 @@ class SourceState extends ChangeNotifier {
   /// announces what it picked up. With more than one worker the per-source line is
   /// only the most recent start, so it says what it means rather than pretending
   /// to be the one thing being tested.
-  String _hubScanIntro(bool selfProbe, int total) {
+  String _hubScanIntro(int total) {
     final mode = _hubWorkers > 1 ? '并发 $_hubWorkers 路' : '逐个';
-    final budget = _hubBudget.inSeconds;
-    if (selfProbe) {
-      return '共 $total 个候选，$mode实测取链（每个 ${budget}s 上限）…';
-    }
-    return '共 $total 个可用源，$mode取回脚本（每个 ${budget}s 上限）…';
+    return '共 $total 个可用源，$mode取回脚本（每个 ${_hubBudget.inSeconds}s 上限）…';
   }
 
-  String _hubActivity(bool selfProbe, String name) {
-    final action = selfProbe ? '实测' : '取回';
-    if (_hubWorkers <= 1) return '正在$action「$name」';
-    return '$action中：「$name」（$_hubWorkers 路并发）';
-  }
-
-  /// Per-取链-attempt share of the user's 探测超时: two attempts at most, with a
-  /// floor low settings cannot push under a search plus one resolve.
-  static Duration _attemptBudget(Duration budget) {
-    final half = (budget.inSeconds / 2).ceil();
-    return Duration(seconds: half < 8 ? 8 : half);
+  String _hubActivity(String name) {
+    if (_hubWorkers <= 1) return '正在取回「$name」';
+    return '取回中：「$name」（$_hubWorkers 路并发）';
   }
 
   List<CustomSourceInfo> get sources => repository.sources;
@@ -329,6 +339,7 @@ class SourceState extends ChangeNotifier {
       .toList(growable: false);
 
   Future<void> init() async {
+    WidgetsBinding.instance.addObserver(this);
     final source = active;
     if (source != null) await _initialize(source);
   }
@@ -936,15 +947,12 @@ class SourceState extends ChangeNotifier {
 
   /// Fetch the lx-hub list and turn it into the seeds of one batch group.
   ///
-  /// [selfProbe] is what separates the two entry points. `true`（自动导入源）
-  /// re-checks every published script inside this app with the same path
-  /// playback uses, because the hub's verdict is hours old and its backend can
-  /// already be dead; `false`（web探测导入源） trusts that daily scan and only
-  /// needs the script text. Nothing is written here — the caller shows the
-  /// verdicts and only [applyHubGroup] replaces the group.
+  /// The hub's own daily scan is taken at face value here: this step only needs
+  /// the script text, and anything it imports gets measured by the app afterwards
+  /// in [probeGroup] — the same path playback uses. Nothing is written here; the
+  /// caller decides whether the group gets replaced.
   Future<HubImportOutcome> scanHubSources({
     required String group,
-    required bool selfProbe,
     int? maxCandidates,
   }) async {
     if (hubWorking) {
@@ -973,25 +981,18 @@ class SourceState extends ChangeNotifier {
           .where((entry) => entry.name.trim().isNotEmpty)
           .toList(growable: false);
       poolSize = published.length;
-      // The static export only contains scripts the hub could resolve, so for a
-      // trusted import that is the whole pool; for a self-probe the web verdict
-      // is only a hint about which platform to test first.
-      final usableFirst = <HubSourceEntry>[
-        ...published.where((entry) => entry.hasUsablePlatform),
-        ...published.where((entry) => !entry.hasUsablePlatform),
-      ];
-      // A self-probe costs tens of seconds per script, so it is capped harder
-      // than the trusted web import, which only downloads.
-      final cap = maxCandidates ?? (selfProbe ? 15 : 25);
-      final targets = selfProbe
-          ? usableFirst.take(cap).toList(growable: false)
-          : usableFirst
-              .where((entry) => entry.hasUsablePlatform)
-              .take(cap)
-              .toList(growable: false);
+      // The static export lists the scripts the hub could resolve, together with
+      // the platforms it managed on each. Those are the only useful candidates; a
+      // script with no usable platform would just be imported and then disabled by
+      // the measurement step.
+      final cap = maxCandidates ?? _hubImportCap;
+      final targets = published
+          .where((entry) => entry.hasUsablePlatform)
+          .take(cap)
+          .toList(growable: false);
 
       hubTotal = targets.length;
-      hubStatus = _hubScanIntro(selfProbe, targets.length);
+      hubStatus = _hubScanIntro(targets.length);
       notifyListeners();
 
       // Indexed rather than appended: several workers finish out of order, and the
@@ -1000,21 +1001,10 @@ class SourceState extends ChangeNotifier {
       final verdicts = List<HubCandidateResult?>.filled(targets.length, null);
       final picked = List<SourceSeed?>.filled(targets.length, null);
       await _runPool(targets, _hubWorkers, (entry, index) async {
-        hubStatus = _hubActivity(selfProbe, entry.name);
+        hubStatus = _hubActivity(entry.name);
         notifyListeners();
 
-        // The user's 探测超时 is the budget for the whole candidate, so the clock
-        // starts here and each step only gets what the previous one left.
-        final elapsed = Stopwatch()..start();
-        Duration left() {
-          final rest = _hubBudget - elapsed.elapsed;
-          return rest < Duration.zero ? Duration.zero : rest;
-        }
-
-        // `late` rather than nullable: every path that fails to download returns
-        // out of this worker, so the reads below are never reached unset — and a
-        // non-nullable local also survives being used inside a closure.
-        late HubDownload download;
+        HubDownload download;
         try {
           download = await _hubGuarded(
             () => _hub.downloadFirst(entry.downloadCandidates),
@@ -1038,60 +1028,13 @@ class SourceState extends ChangeNotifier {
 
         final script = download.script;
         final scriptUrl = download.url;
-        List<String> platforms;
-        if (selfProbe) {
-          final remaining = left();
-          if (remaining <= Duration.zero) {
-            // The download alone used the budget: say so instead of starting a
-            // 实测 that is dead on arrival.
-            verdicts[index] = HubCandidateResult(
-              entry: entry,
-              ok: false,
-              detail: '取回脚本已用完 ${_hubBudget.inSeconds}s，未做实测',
-            );
-            hubDone++;
-            notifyListeners();
-            return;
-          }
-          HubCandidateResult verdict;
-          try {
-            verdict = await _hubGuarded(
-              () => _probeHubCandidate(entry, script),
-              budget: remaining,
-            );
-          } on HubScanCancelled {
-            cancelled = true;
-            return;
-          } on _HubProbeTimeout catch (timeout) {
-            verdicts[index] = HubCandidateResult(
-              entry: entry,
-              ok: false,
-              detail: '${timeout.message}，未导入',
-            );
-            hubDone++;
-            notifyListeners();
-            return;
-          } catch (error) {
-            verdicts[index] = HubCandidateResult(
-              entry: entry,
-              ok: false,
-              detail: '实测异常：$error',
-            );
-            hubDone++;
-            notifyListeners();
-            return;
-          }
-          platforms = verdict.platforms;
-          verdicts[index] = verdict;
-        } else {
-          platforms = entry.usablePlatforms;
-          verdicts[index] = HubCandidateResult(
-            entry: entry,
-            ok: platforms.isNotEmpty,
-            detail: '${entry.platformSummary}（web 实测）',
-            platforms: platforms,
-          );
-        }
+        final platforms = entry.usablePlatforms;
+        verdicts[index] = HubCandidateResult(
+          entry: entry,
+          ok: platforms.isNotEmpty,
+          detail: '${entry.platformSummary}（web 实测）',
+          platforms: platforms,
+        );
         if (platforms.isNotEmpty) {
           picked[index] = SourceSeed(
             script: script,
@@ -1134,100 +1077,6 @@ class SourceState extends ChangeNotifier {
       cancelled: cancelled,
       generatedAt: generatedAt,
     );
-  }
-
-  /// Run one published script through the real playback path: mount a throwaway
-  /// sandbox, activate it, then resolve a song we fetched for each platform the
-  /// script claims. Only a link that serves audio counts.
-  Future<HubCandidateResult> _probeHubCandidate(
-    HubSourceEntry entry,
-    String script,
-  ) async {
-    final temp = CustomSourceInfo(
-      id: 'hub_probe_${entry.id}',
-      name: entry.name,
-      author: entry.author,
-      version: entry.version,
-    );
-    final budget = _hubBudget;
-    _pinned.add(temp.id);
-    try {
-      final slot = await _mountSlot(temp.id);
-      try {
-        slot.capabilities = await _activateSlot(slot, temp, script);
-        slot.ready = true;
-      } catch (error) {
-        return HubCandidateResult(
-          entry: entry,
-          ok: false,
-          detail: '脚本加载失败：$error',
-        );
-      }
-
-      final supported = slot.capabilities.sources.keys
-          .where((name) => slot.capabilities.supports(name, 'musicUrl'))
-          .toList();
-      if (supported.isEmpty) {
-        return HubCandidateResult(
-          entry: entry,
-          ok: false,
-          detail: '脚本没有声明任何可取链平台',
-        );
-      }
-
-      // Try what the hub says works first, then everything else it claims.
-      final preferred = entry.usablePlatforms.where(supported.contains).toList();
-      final order = <String>[
-        ...preferred,
-        ...supported.where((name) => !preferred.contains(name)),
-      ];
-
-      // A candidate gets two shots at most, so half of the user's 探测超时 is the
-      // price per attempt; the floor keeps a low setting from timing out before a
-      // search for the test song can even finish.
-      final attempt = _attemptBudget(budget);
-      String lastError = '';
-      for (final platform in order.take(2)) {
-        // 停止 pressed while the first platform was being tested: give up at
-        // once instead of spending a second deadline on a script the user has
-        // already walked away from.
-        if (_hubCancelRequested) throw const HubScanCancelled();
-        final song = await _testSongFor(platform);
-        if (song == null) {
-          lastError = '无法获取 ${hubPlatformLabel(platform)} 的测试歌曲';
-          continue;
-        }
-        try {
-          // Low quality on purpose: a scan asks "does this script serve real
-          // audio at all", and 128k is the cheapest link to prove it. The whole
-          // attempt is deadline-bound so one hung script cannot stall the batch.
-          await _resolveVia(temp, song, quality: '128k').timeout(attempt);
-          _supported.putIfAbsent(temp.id, () => <String>{}).add(platform);
-          return HubCandidateResult(
-            entry: entry,
-            ok: true,
-            detail: '${hubPlatformLabel(platform)} 实测返回真实音频'
-                '（${song.name} - ${song.singer}）',
-            platforms: <String>[platform],
-          );
-        } on TimeoutException {
-          lastError = '${hubPlatformLabel(platform)} 取链超时（${attempt.inSeconds}s）';
-        } catch (error) {
-          lastError = '$error';
-        }
-      }
-      return HubCandidateResult(
-        entry: entry,
-        ok: false,
-        detail: '取链失败：$lastError',
-        platforms: const <String>[],
-      );
-    } finally {
-      _pinned.remove(temp.id);
-      _dropSlot(temp.id);
-      _supported.remove(temp.id);
-      notifyListeners();
-    }
   }
 
   Future<Song?> _testSongFor(String platform) {
@@ -1502,15 +1351,20 @@ class SourceState extends ChangeNotifier {
 
   /// 一键删除所有禁用源. Enabled sources — including the hand-imported ones — are
   /// never touched, so the button only ever removes what a probe already proved
-  /// dead.
-  Future<int> deleteDisabledSources() async {
-    final targets = disabledSources;
+  /// dead. With [group] the sweep stays inside that batch group, which is what an
+  /// unattended update does: a hand-imported script the user left switched off is
+  /// theirs to delete, not ours.
+  Future<int> deleteDisabledSources({String? group}) async {
+    final targets = disabledSources
+        .where((source) => group == null || source.group == group)
+        .toList(growable: false);
     for (final source in targets) {
       await deleteSource(source.id);
     }
     if (targets.isNotEmpty) {
       debugLog?.record('删除全部禁用源', <String, Object?>{
         '数量': targets.length,
+        if (group != null) '限定分组': sourceGroupName(group),
         '源': targets.map((source) => source.name).join('、'),
       });
     }
@@ -1549,14 +1403,190 @@ class SourceState extends ChangeNotifier {
     return removed;
   }
 
+  /// 一键更新源: the four presses the manual routine takes — fetch the hub's daily
+  /// list, write it over the batch group, measure every one of them here, and drop
+  /// the ones that cannot serve audio — run through without a confirm dialog.
+  ///
+  /// Two properties make it safe to do unattended:
+  ///  - nothing is written unless the hub answered with at least one usable script,
+  ///    so an outage can never empty the very group it replaces;
+  ///  - the measurement only ever disables sources inside that group, so a hand-
+  ///    imported script is untouched no matter how badly the pass goes.
+  ///
+  /// A run that drifts into the background stops at once (see
+  /// [didChangeAppLifecycleState]) and deletes nothing, because a partly measured
+  /// group says nothing about the sources it never reached.
+  Future<SourceRefreshOutcome> refreshSources({bool automatic = false}) async {
+    if (hubWorking) {
+      return const SourceRefreshOutcome(error: '已有一批源在获取中，请等待它结束');
+    }
+    if (!_foreground) {
+      return const SourceRefreshOutcome(
+        error: '应用不在前台，本次源更新没有开始',
+        cancelled: true,
+      );
+    }
+    final label = automatic ? '自动更新源' : '一键更新源';
+    final started = DateTime.now();
+    final scan = await scanHubSources(group: sourceGroupWeb);
+    // 停止 pressed during the fetch: a partial list would be imported as if it were
+    // the whole day's results, so the run ends here with the sources untouched.
+    if (scan.cancelled) {
+      return const SourceRefreshOutcome(
+        error: '已停止，现有源保持不变',
+        cancelled: true,
+      );
+    }
+    if (scan.seeds.isEmpty) {
+      debugLog?.record('$label：现有源保持不变', <String, Object?>{
+        '原因': scan.error ?? '列表里没有可导入的脚本',
+        '候选': scan.poolSize,
+        '取消': scan.cancelled,
+      });
+      return SourceRefreshOutcome(
+        error: scan.error ?? '没有取到可导入的源，现有源保持不变',
+        cancelled: scan.cancelled,
+      );
+    }
+
+    final imported = await applyHubGroup(sourceGroupWeb, scan.seeds);
+    if (imported == 0) {
+      return const SourceRefreshOutcome(error: '脚本写入失败，现有源保持不变');
+    }
+
+    final probe = await probeGroup(sourceGroupWeb);
+    if (probe.error != null) {
+      return SourceRefreshOutcome(imported: imported, error: probe.error);
+    }
+    final disabled = probe.disabled.length;
+    if (probe.cancelled || !_foreground) {
+      debugLog?.record('$label：中途停止', <String, Object?>{
+        '写入': imported,
+        '已禁用': disabled,
+        '原因': _foreground ? '手动停止' : '应用退到后台',
+      });
+      return SourceRefreshOutcome(
+        imported: imported,
+        disabled: disabled,
+        cancelled: true,
+      );
+    }
+
+    final removed = await deleteDisabledSources(group: sourceGroupWeb);
+    final kept = repository.byGroup(sourceGroupWeb).length;
+    await appState.update((settings) =>
+        settings.lastSourceRefreshAt = DateTime.now().millisecondsSinceEpoch);
+    debugLog?.record('$label完成', <String, Object?>{
+      '写入': imported,
+      '禁用': disabled,
+      '删除': removed,
+      '剩余': kept,
+      '耗时': '${DateTime.now().difference(started).inSeconds}s',
+    });
+    return SourceRefreshOutcome(
+      imported: imported,
+      disabled: disabled,
+      removed: removed,
+      kept: kept,
+    );
+  }
+
+  /// Arm the self-started update after launch when 开机自动后台检查源 is on.
+  ///
+  /// Nothing here waits on the result: the queue keeps playing from the sources it
+  /// already has, and the run happens beside it.
+  void maybeScheduleAutoRefresh() {
+    if (!appState.settings.autoSourceRefresh) return;
+    if (_autoRefreshTimer != null || !_autoRefreshDue()) return;
+    _autoRefreshTimer = Timer(_autoRefreshLead, () {
+      _autoRefreshTimer = null;
+      if (_disposed || !_autoRefreshDue()) return;
+      if (!appState.settings.autoSourceRefresh) return;
+      unawaited(refreshSources(automatic: true));
+    });
+  }
+
+  /// True when no update has ever finished, or the last one is a day old.
+  bool _autoRefreshDue() {
+    final last = appState.settings.lastSourceRefreshAt;
+    if (last <= 0) return true;
+    return DateTime.now()
+            .difference(DateTime.fromMillisecondsSinceEpoch(last)) >=
+        _autoRefreshInterval;
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Only a real suspension freezes the sandbox. The short `inactive` window —
+    // app switcher, notification shade, an incoming call banner — must not cut a
+    // pass off, since playback keeps running through all of it.
+    final foreground =
+        state != AppLifecycleState.paused && state != AppLifecycleState.detached;
+    if (foreground == _foreground) return;
+    _foreground = foreground;
+    if (!foreground) {
+      // A pass that continues behind the lock screen would measure nothing but
+      // timeouts, and every one of those is written off as a dead source.
+      if (hubWorking) cancelHubScan();
+      return;
+    }
+    // Coming back with the switch still on and the day still unmet re-arms the
+    // pass that going to the background cut short.
+    maybeScheduleAutoRefresh();
+  }
+
   @override
   void dispose() {
+    _disposed = true;
+    _autoRefreshTimer?.cancel();
+    _autoRefreshTimer = null;
+    WidgetsBinding.instance.removeObserver(this);
     for (final slot in _slots.values) {
       final engine = slot.engine;
       if (engine is JsSourceEngine) unawaited(engine.dispose());
     }
     _slots.clear();
     super.dispose();
+  }
+}
+
+/// What one 一键更新 run did, in the numbers the page and the log show.
+class SourceRefreshOutcome {
+  const SourceRefreshOutcome({
+    this.imported = 0,
+    this.disabled = 0,
+    this.removed = 0,
+    this.kept = 0,
+    this.cancelled = false,
+    this.error,
+  });
+
+  /// Scripts written over the batch group.
+  final int imported;
+
+  /// Sources the measurement switched off.
+  final int disabled;
+
+  /// Disabled sources deleted at the end of the same run.
+  final int removed;
+
+  /// Sources left in the group afterwards.
+  final int kept;
+
+  /// Stopped before the whole group was measured, so nothing was deleted and the
+  /// next launch tries again.
+  final bool cancelled;
+
+  /// Why nothing happened, when nothing happened.
+  final String? error;
+
+  bool get ok => error == null && !cancelled;
+
+  /// One line for the toast: `更新完成：写入 24 个，实测淘汰 6 个，剩 18 个可用`.
+  String get summary {
+    if (error != null) return error!;
+    if (cancelled) return '已停止：写入 $imported 个，实测未完成，下次启动继续';
+    return '更新完成：写入 $imported 个，实测淘汰 $removed 个，剩 $kept 个可用';
   }
 }
 

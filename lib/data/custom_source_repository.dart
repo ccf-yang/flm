@@ -9,7 +9,7 @@ import '../models/custom_source.dart';
 class CustomSourceRepository {
   CustomSourceRepository._(this._dir, this._indexFile, this.sources);
 
-  /// Batch probing (自动导入源 / web探测导入源) can legitimately land a couple of
+  /// Batch updating (web探测导入源) can legitimately land a couple of
   /// dozen working scripts at once, so the hand-import era's cap of 20 is gone.
   static const int maxSources = 100;
 
@@ -236,7 +236,7 @@ class CustomSourceRepository {
           createdAt: (map['createdAt'] as num?)?.toInt() ??
               DateTime.now().millisecondsSinceEpoch,
           disabled: map['disabled'] == true,
-          group: '${map['group'] ?? sourceGroupManual}',
+          group: normalizeSourceGroup('${map['group'] ?? sourceGroupManual}'),
         );
 
         await _writeScript(id, parsed.script);

@@ -26,9 +26,9 @@ class CustomSourceInfo {
   /// pool, so a broken script no longer slows every song down.
   final bool disabled;
 
-  /// Which section of the 自定义源 page owns this entry: a hand-imported script,
-  /// the batch result of the in-app source search, or the batch result imported
-  /// from the lx-hub web list. Only grouped entries are ever replaced wholesale.
+  /// Which section of the 自定义源 page owns this entry: a hand-imported script or
+  /// the batch result imported from the lx-hub web list. Only grouped entries are
+  /// ever replaced wholesale.
   final String group;
 
   factory CustomSourceInfo.fromJson(Map<String, dynamic> json) {
@@ -46,7 +46,7 @@ class CustomSourceInfo {
       importUrl: importUrl,
       createdAt: (json['createdAt'] as num?)?.toInt() ?? 0,
       disabled: json['disabled'] == true,
-      group: '${json['group'] ?? sourceGroupManual}',
+      group: normalizeSourceGroup('${json['group'] ?? sourceGroupManual}'),
     );
   }
 
@@ -91,16 +91,18 @@ class CustomSourceInfo {
 /// Script imported by hand (本地/在线 URL) — never touched by a batch operation.
 const String sourceGroupManual = '';
 
-/// Result of the in-app source search (lx-hub 的搜索+沙箱实测方式).
-const String sourceGroupAuto = 'auto';
-
-/// Result of the lx-hub web list (每日实测的可用源).
+/// Result of the lx-hub web list (每日实测的可用源) — the one batch group the app
+/// keeps, and the one 一键更新 replaces.
 const String sourceGroupWeb = 'web';
+
+/// Entries written before 自动导入源 and web探测导入源 turned out to read the same
+/// hub index are stored under `auto`. They fold into the web group on load rather
+/// than disappearing from the page while still being used for playback.
+String normalizeSourceGroup(String group) =>
+    group == 'auto' ? sourceGroupWeb : group;
 
 String sourceGroupName(String group) {
   switch (group) {
-    case sourceGroupAuto:
-      return '自动导入源';
     case sourceGroupWeb:
       return 'web探测导入源';
     default:
