@@ -52,6 +52,8 @@ class AppSettings {
     this.saveProgress = true,
     this.autoPlayOnStart = false,
     this.showTranslation = true,
+    this.preloadRunway = true,
+    this.runwayDepth = 2,
     this.activeSourceId,
     List<String>? searchHistory,
     List<String>? dislikedKeys,
@@ -117,6 +119,18 @@ class AppSettings {
   int probeTimeoutSeconds;
   /// How many sources batch detection works on at the same time.
   int probeConcurrency;
+  /// Pull the *whole file* of the next few tracks into a hidden playback cache,
+  /// so a track boundary is a local file open instead of a bet on one remote link
+  /// still answering. Off it stays at links-only, which costs no data at the
+  /// boundary but can lose the song when a source expires or a host goes away.
+  bool preloadRunway;
+  /// How many tracks the runway cache keeps. One is needed for the boundary and a
+  /// few more survive a dead stretch of the list; more only spends data.
+  ///
+  /// Transfers run on whatever connection the device has — the app cannot tell
+  /// WiFi from cellular without a network-status plugin, which is why the switch
+  /// is an explicit opt-out rather than a per-network rule.
+  int runwayDepth;
   /// Platforms the user keeps as categories; order follows [kPlatformIds].
   List<String> visibleSources;
 
@@ -125,6 +139,10 @@ class AppSettings {
   int get probeTimeoutClamped => probeTimeoutSeconds.clamp(8, 90);
   int get probeConcurrencyClamped => probeConcurrency.clamp(1, 6);
   Duration get probeDeadline => Duration(seconds: probeTimeoutClamped);
+
+  /// Tracks the runway cache keeps ahead of the playhead, clamped so a
+  /// hand-edited settings.json cannot ask for a queue worth of downloads.
+  int get runwayDepthClamped => runwayDepth.clamp(0, 4);
 
   /// The platform ids that take part in categorisation, always at least one.
   List<String> get platformIds {
@@ -214,6 +232,8 @@ class AppSettings {
       saveProgress: json['saveProgress'] != false,
       autoPlayOnStart: json['autoPlayOnStart'] == true,
       showTranslation: json['showTranslation'] != false,
+      preloadRunway: json['preloadRunway'] != false,
+      runwayDepth: (json['runwayDepth'] as num?)?.toInt() ?? 2,
       activeSourceId: json['activeSourceId'] as String?,
       searchHistory: (json['searchHistory'] as List<dynamic>? ?? <dynamic>[])
           .map((item) => '$item')
@@ -260,6 +280,8 @@ class AppSettings {
         'saveProgress': saveProgress,
         'autoPlayOnStart': autoPlayOnStart,
         'showTranslation': showTranslation,
+        'preloadRunway': preloadRunway,
+        'runwayDepth': runwayDepth,
         'activeSourceId': activeSourceId,
         'searchHistory': searchHistory,
         'dislikedKeys': dislikedKeys,

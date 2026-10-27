@@ -7,6 +7,7 @@ import '../../core/theme.dart';
 import '../../models/app_settings.dart';
 import '../../services/backup_service.dart';
 import '../../services/debug_log.dart';
+import '../../services/runway_cache.dart';
 import '../../state/app_state.dart';
 import '../../state/library_state.dart';
 import '../../state/player_state.dart';
@@ -233,6 +234,43 @@ class SettingsScreen extends StatelessWidget {
                                     flmToast(context, '已清空不喜欢规则');
                                   },
                           ),
+                        ],
+                      ),
+                      const SectionHead(title: '后台播放保障'),
+                      _Group(
+                        children: <Widget>[
+                          _SwitchRow(
+                            icon: CupertinoIcons.square_arrow_down,
+                            label: '预下载接下来几首',
+                            caption: '把整曲先存到本机，锁屏切歌那一下不再赌某个链接还有效',
+                            value: settings.preloadRunway,
+                            onChanged: (value) {
+                              appState.update((settings) => settings.preloadRunway = value);
+                            },
+                          ),
+                          _SettingRow(
+                            icon: CupertinoIcons.list_number,
+                            label: '预下载首数',
+                            value: '${settings.runwayDepthClamped} 首',
+                            caption: '1 首只保住下一次切歌，3 首能扛过一段连续坏源',
+                            onTap: () => _pickOption(
+                              context,
+                              title: '预下载首数',
+                              current: '${settings.runwayDepthClamped}',
+                              options: const <Map<String, String>>[
+                                <String, String>{'id': '1', 'name': '1 首'},
+                                <String, String>{'id': '2', 'name': '2 首'},
+                                <String, String>{'id': '3', 'name': '3 首'},
+                                <String, String>{'id': '4', 'name': '4 首'},
+                              ],
+                              onSelected: (value) {
+                                appState.update(
+                                  (settings) => settings.runwayDepth = int.tryParse(value) ?? 2,
+                                );
+                              },
+                            ),
+                          ),
+                          const _RunwayCacheRow(),
                         ],
                       ),
                       const SectionHead(title: '数据'),
@@ -650,7 +688,7 @@ class _IntroCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  '版本 1.0.5 · 安静的光，随处可听',
+                  '版本 1.0.6 · 安静的光，随处可听',
                   style: TextStyle(fontSize: 11, color: mutedFor(context)),
                 ),
               ],
@@ -685,6 +723,60 @@ class _Group extends StatelessWidget {
           ],
         ],
       ),
+    );
+  }
+}
+
+/// The runway cache's footprint and the button that empties it.
+///
+/// Reads the cache itself instead of the settings, so it owns the rebuild a clear
+/// needs — the rest of this page is stateless.
+class _RunwayCacheRow extends StatefulWidget {
+  const _RunwayCacheRow();
+
+  @override
+  State<_RunwayCacheRow> createState() => _RunwayCacheRowState();
+}
+
+class _RunwayCacheRowState extends State<_RunwayCacheRow> {
+  bool _clearing = false;
+
+  Future<void> _clear() async {
+    setState(() => _clearing = true);
+    await context.read<RunwayCache>().clear();
+    if (!mounted) return;
+    setState(() => _clearing = false);
+    flmToast(context, '已清空播放缓存');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cache = context.read<RunwayCache>();
+    final bytes = cache.totalBytes();
+    final hasFiles = bytes > 0 && !_clearing;
+    final detail = _clearing
+        ? '清空中…'
+        : bytes == 0
+            ? '还没存过整曲'
+            : '${cache.cachedCount} 首 · ${RunwayCache.human(bytes)}';
+    return _SettingRow(
+      icon: CupertinoIcons.rectangle_stack,
+      label: '播放缓存占用',
+      caption: '$detail · 上限 ${RunwayCache.human(RunwayCache.maxBytes)}，播过的自动删',
+      trailing: hasFiles
+          ? Pressable(
+              onTap: _clear,
+              child: Text(
+                '清空',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: coralFor(context),
+                ),
+              ),
+            )
+          : null,
+      onTap: hasFiles ? _clear : null,
     );
   }
 }
