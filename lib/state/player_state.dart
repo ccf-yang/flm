@@ -15,6 +15,7 @@ import '../services/lyric_parser.dart';
 import '../services/debug_log.dart';
 import '../services/online_engine.dart';
 import '../services/player_service.dart';
+import '../services/runway_cache.dart';
 import 'app_state.dart';
 import 'library_state.dart';
 import 'source_state.dart';
@@ -26,8 +27,17 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     required this.appState,
     required this.libraryState,
     required this.onlineEngine,
+    this.runway,
     this.debugLog,
   }) {
+    runway?.labelFor = (key) {
+      for (final song in _queue) {
+        if (_songKey(song) == key) return song.name;
+      }
+      final current = _current;
+      if (current != null && _songKey(current) == key) return current.name;
+      return key;
+    };
     _subscriptions.add(
       service.positionStream.listen((position) {
         if (position > _position) _lastProgressChangeAt = DateTime.now();
@@ -39,6 +49,14 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
         if (_duration.inSeconds > 10 &&
             (_duration - position).inSeconds <= _preloadLeadSeconds) {
           unawaited(_preloadNext());
+        }
+        // The runway cache holds the *whole* files of the next tracks, and a song
+        // takes far longer to transfer than its link does to resolve. Start that
+        // while the current track still has minutes left, so the file — not just
+        // the URL — is on disk by the time the boundary arrives.
+        if (_duration.inSeconds > 10 &&
+            (_duration - position).inSeconds <= _runwayLeadSeconds) {
+          unawaited(_prefetchLookahead());
         }
         _notify();
       }),
@@ -128,6 +146,13 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   final LibraryState libraryState;
   final OnlineEngine onlineEngine;
 
+  /// Optional hidden full-file cache of the tracks the queue is about to reach.
+  /// When present (and its setting is on) a track boundary can be a plain local
+  /// file open, which is the only shape of "next song ready" that survives an
+  /// expiring link, a dead source host, or a cellular hole behind the lock
+  /// screen.
+  final RunwayCache? runway;
+
   /// When set (and its switch is on), playback decisions are mirrored to the
   /// in-app debug page: what URL was handed to the player, why a load failed
   /// (with stack), lifecycle and audio-interruption events.
@@ -199,13 +224,31 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   final Map<String, _CachedUrl> _urlCache = <String, _CachedUrl>{};
   final Set<String> _preloading = <String>{};
 
-  /// Songs this pass could not be given a working link — every source failed to
-  /// resolve it, or the native player refused the standby load. Cooling them down
-  /// is what lets the preloader move on to the track *after* the dead one instead
-  /// of retrying the same song every eight seconds until the boundary arrives with
-  /// nothing prepared. Entries expire on their own and are dropped when the queue
-  /// or the play mode changes, or when the active source changes.
-  final Map<String, DateTime> _unplayableUntil = <String, DateTime>{};
+  /// Songs this pass through the queue could not be given a working link — every
+  /// source failed to resolve it, or the native player refused the standby load.
+  /// They are treated as *already played*: the planner and the advance walk past
+  /// them, and nothing is retried until the queue wraps around, which is the only
+  /// moment the source may have recovered. The set is cleared when a full pass
+  /// finds nothing left to play, when the queue or play mode changes, when the
+  /// active source changes, and as soon as one of its songs plays.
+  final Set<String> _skippedThisRound = <String>{};
+
+  /// Songs skipped since the last audible one. A queue-wide problem (no network,
+  /// every source down) looks exactly like a dead song from here, so past this
+  /// bound the controller stops consuming tracks and waits with a backoff instead
+  /// of marking the whole list unplayable one song at a time.
+  int _consecutiveSkips = 0;
+  static const int _maxConsecutiveSkips = 5;
+
+  /// Nothing in the queue can be started right now while the user still wants
+  /// sound. The play intent therefore stays set — instead of the old "pause and
+  /// wait for the app to be opened" state that also killed the watchdog and left
+  /// the headset and car controls with nothing to act on — and the watchdog
+  /// retries the queue on [_stockRetryLead] intervals.
+  bool _waitingForStock = false;
+  DateTime _nextStockRetryAt = DateTime.fromMillisecondsSinceEpoch(0);
+  static const Duration _stockRetryLeadForeground = Duration(seconds: 20);
+  static const Duration _stockRetryLeadBackground = Duration(seconds: 60);
 
   /// Active source the cooldowns were earned against; a different script may well
   /// serve the same songs, so the marks are dropped when it changes.
@@ -241,7 +284,6 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   bool _ignoreRemotePause = false;
   Timer? _settingsSaveTimer;
   bool _resumeOnForeground = false;
-  int _autoSkips = 0;
   bool _resumeAfterInterruption = false;
   bool _appInForeground = true;
   bool _userPaused = false;
@@ -256,16 +298,21 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   /// candidates keeps a ready URL for the whole background stretch.
   static const int _preloadLeadSeconds = 150;
 
-  /// How long a song stays out of the plan after a failed link or standby load.
-  /// Long enough that a dead source host is not paid for again on every track,
-  /// short enough that a song lost to one network blip is back on the next pass
-  /// through the queue.
-  static const Duration _unplayableCooldown = Duration(minutes: 10);
-
-  /// How many upcoming tracks one prewarm pass will walk while skipping the
-  /// cooled-down ones. Deeper than one so a single dead song cannot leave the
-  /// standby empty for the whole track.
+  /// How many upcoming tracks one prewarm pass will walk while skipping the ones
+  /// this round already gave up on. Deeper than one so a single dead song cannot
+  /// leave the standby empty for the whole track.
   static const int _planSearchWidth = 3;
+
+  /// How far an automatic or remote advance is allowed to look for something it
+  /// can actually start. Several dead tracks in a row are a normal sight on an
+  /// unstable source, and the queue must walk past all of them in one go rather
+  /// than stopping after the third.
+  static const int _maxAdvanceScan = 12;
+
+  /// How far before the end of the current track a following song's *file* is
+  /// pulled into the runway cache. Transferring a whole track costs far more time
+  /// than resolving its link, so this lead is several times [_preloadLeadSeconds].
+  static const int _runwayLeadSeconds = 420;
 
   /// A resolve started while backgrounded is waiting on frozen JavaScript, so cap
   /// how long an advance blocks on it. Returning to the foreground restarts the
@@ -445,6 +492,27 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     final now = DateTime.now();
     final started = _loadStartedAt;
 
+    // The queue has nothing playable at the moment. This is handled here rather
+    // than by the stall logic below on purpose: re-arming a song that never made
+    // it to the player would only repeat the failed load every fifteen seconds,
+    // while the user still hears nothing.
+    if (_waitingForStock) {
+      if (_loading) return;
+      if (now.isBefore(_nextStockRetryAt)) {
+        // Keep preparing during the wait: a late link or a finished download is
+        // exactly what ends it. The session gets re-claimed once per background
+        // stretch so the lock-screen controls stay ours for the next attempt.
+        if (!service.hasPreparedNext && !_advancing) unawaited(_preloadNext());
+        if (!_appInForeground && !_proactiveHealDone) {
+          _proactiveHealDone = true;
+          unawaited(_activateSession(reason: '等待可用资源'));
+        }
+        return;
+      }
+      unawaited(_retryStock());
+      return;
+    }
+
     // The source sandbox is a frozen WKWebView once the screen locks, so a link
     // that was not resolved before then can never be resolved. Abandon that load
     // rather than sitting on "正在获取播放链接…" — and hand the queue to the first
@@ -456,7 +524,8 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
         _silentHeals = 0;
         debugLog?.record('后台取链停滞，放弃本次加载 ${_current?.name}', <String, Object?>{
           '已等待': '${now.difference(started).inSeconds}s',
-          '下一首已缓存链接': _nextPlayableIndex() != null,
+          '下一首有货': _nextPlayableIndex() != null,
+          '已下整曲': runway?.cachedCount,
         });
         _playToken++;
         _loading = false;
@@ -673,11 +742,17 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     _statusText = '正在获取播放链接…';
     _errorText = null;
     _notify();
-    var handedUrl = song.isLocal ? (song.localPath ?? '') : '(未取到)';
+    // A track whose whole file already sits in the runway cache starts from disk:
+    // no link, no network, no source — the boundary that used to die on an
+    // expiring address becomes a file open.
+    final runwayPath = song.isLocal ? null : _runwayPath(song);
+    final filePath = song.isLocal ? song.localPath : runwayPath;
+    var handedUrl = filePath ?? '(未取到)';
     debugLog?.record('播放开始 ${song.name}', <String, Object?>{
       '歌曲': '${song.name} - ${song.singer}',
       '平台': song.source,
       '本地': song.isLocal,
+      if (runwayPath != null) '整曲缓存': true,
       '前台': _appInForeground,
       '起始位置': '${initialPosition.inSeconds}s',
       if (preferredUrl != null) '已预排': true,
@@ -701,13 +776,16 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     }));
 
     try {
-      if (song.isLocal) {
+      if (song.isLocal && filePath == null) {
+        throw StateError('本地文件已不存在');
+      }
+      if (filePath != null) {
         _handedOff = true;
         // A local file must start immediately; the following link keeps
         // resolving in parallel and is armed by the success path below.
-        await _activateSession(reason: '本地起播');
+        await _activateSession(reason: song.isLocal ? '本地起播' : '整曲缓存起播');
         if (token != _playToken || _disposed) return;
-        final load = service.playFile(song.localPath!, initialPosition: initialPosition);
+        final load = service.playFile(filePath, initialPosition: initialPosition);
         // The service has cleared/replaced its standby by now; arm the new one
         // with the following track while this item is still loading.
         handedToPlayer = true;
@@ -758,10 +836,14 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       _loading = false;
       _statusText = null;
       _errorText = null;
-      _autoSkips = 0;
       // This song just reached the native player, so any earlier "can't get a
       // link for it" verdict is obsolete — the automatic planner may use it again.
-      _unplayableUntil.remove(_songKey(song));
+      _skippedThisRound.remove(_songKey(song));
+      // Audible again: the queue-wide failure tally and the stock backoff are
+      // history, and the pass through the list restarts from here.
+      _consecutiveSkips = 0;
+      _waitingForStock = false;
+      _stockTried.clear();
       _lastProgressChangeAt = DateTime.now();
       final actualDuration = service.player.duration ?? service.duration;
       debugLog?.record('播放成功 ${song.name}', <String, Object?>{
@@ -798,6 +880,16 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
           '堆栈': '$stack',
         });
         if (!_appInForeground) _resumeOnForeground = true;
+        // A cached file that the player refused is worse than a bad link — it
+        // would be preferred again on every attempt. Throw it away and let the
+        // retry fall back to the remote address.
+        if (runwayPath != null && handedUrl == runwayPath) {
+          debugLog?.record('整曲缓存文件无法播放，丢弃 ${song.name}', <String, Object?>{
+            '文件': runwayPath,
+            '错误': '$error',
+          });
+          unawaited(runway?.drop(_songKey(song)));
+        }
         _urlCache.remove(_songKey(song));
         _statusText = '播放失败，正在重试…';
         _notify();
@@ -812,7 +904,6 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       }
       _loading = false;
       _isPlaying = false;
-      _shouldPlay = false;
       // The current song did not reach the native player (or did not survive
       // the load). The native clock therefore still belongs to the previous
       // track; keeping its position would make a later foreground retry start
@@ -821,20 +912,17 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       _position = Duration.zero;
       _watchPosition = Duration.zero;
       // All configured sources failed for this song: keep moving to the next
-      // one instead of stalling, until either something plays or the whole
-      // queue has failed a full round. Behind the lock screen the source sandbox
-      // cannot resolve anything, so only a track whose link is already cached
-      // counts as playable there — that is what keeps a background session
-      // running instead of dying on the first unresolvable song.
-      if (!song.isLocal) _markUnplayable(song, _friendlyError(error));
+      // one instead of stalling, until either something plays or this pass
+      // through the queue runs out. Behind the lock screen the source sandbox
+      // cannot resolve anything, so only a track whose link — or whole file — is
+      // already on the device counts as playable there.
+      _markUnplayable(song, _friendlyError(error));
       final advance = _nextPlayableIndex();
       if (advance != null &&
           !_userPaused &&
-          !song.isLocal &&
           sourceState.hasActiveSource &&
           _queue.length > 1 &&
-          _autoSkips < _queue.length) {
-        _autoSkips++;
+          _consecutiveSkips < _maxConsecutiveSkips) {
         _statusText = sourceState.lastPoolError == null
             ? '这首无法播放，正在试下一首…'
             : '无法播放：${sourceState.lastPoolError}';
@@ -843,14 +931,33 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
           '错误': '$error',
           '失败地址': handedUrl,
           '源侧原因': sourceState.lastPoolError,
-          '已跳数': _autoSkips,
+          '本轮已跳': _skippedThisRound.length,
+          '连续跳过': _consecutiveSkips,
           '前台': _appInForeground,
-          '下一首已缓存链接': _hasUsableCache(_queue[advance]),
+          '下一首有货': _hasUsableCache(_queue[advance]),
         });
         _notify();
         await playSong(_queue[advance], queue: _queue, index: advance);
         return;
       }
+      // Nothing to advance to, for one of two very different reasons: the queue
+      // really ended (顺序播放 reaching its last track) or this pass simply has no
+      // playable track left. Only the first may clear the play intent — clearing
+      // it in the second case is what switched the lock screen to "paused",
+      // disarmed the watchdog, and left the headset and car buttons inert until
+      // the app was opened again.
+      final ended = _upcoming(count: 1).isEmpty;
+      if (!ended && !_userPaused && sourceState.hasActiveSource) {
+        await _enterStockWait(
+          song: song,
+          reason: _friendlyError(error),
+          error: '$error',
+          stack: '$stack',
+          url: handedUrl,
+        );
+        return;
+      }
+      _shouldPlay = false;
       _errorText = _friendlyError(error);
       if (!_appInForeground) {
         // Nothing can be fetched while suspended: queue an automatic retry for
@@ -875,50 +982,301 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
 
   String _songKey(Song song) => '${song.source}:${song.id}';
 
+  /// Whether an address handed to the player points at a file on this device
+  /// rather than a URL a source issued. Those need neither a network nor a link
+  /// that has not expired yet.
+  static bool _isLocalPath(String value) =>
+      value.startsWith('/') || value.startsWith('file://');
+
+  /// Whether a track can be started *now* without asking a source for anything:
+  /// its whole file is on disk, or its link is still inside its validity window.
   bool _hasUsableCache(Song song) {
+    if (_runwayPath(song) != null) return true;
     final cached = _urlCache[_songKey(song)];
     return cached != null && cached.expiresAt.isAfter(DateTime.now());
   }
 
-  /// Whether [song] is cooling down after a failed link or standby load.
-  bool _isMarkedUnplayable(Song song) {
-    final key = _songKey(song);
-    final until = _unplayableUntil[key];
-    if (until == null) return false;
-    if (until.isAfter(DateTime.now())) return true;
-    _unplayableUntil.remove(key);
-    return false;
-  }
+  /// Whether [song] has been given up on during this pass through the queue.
+  bool _isMarkedUnplayable(Song song) => _skippedThisRound.contains(_songKey(song));
 
-  /// Takes [song] out of the plan for [_unplayableCooldown].
+  /// Takes [song] out of this pass. Nothing is remembered about *why* — the next
+  /// round re-derives it from the sources, which is the point: a track that is
+  /// skipped today may be perfectly fine after a network hop or a source reload.
   ///
   /// Only called when a resolve could honestly have succeeded: behind the lock
   /// screen with a frozen WebView, or with no source enabled at all, a failure
-  /// says nothing about the song, and cooling it down would empty the queue out
-  /// one track at a time on a cause the song is not responsible for.
+  /// says nothing about the song.
   void _markUnplayable(Song song, String reason) {
+    final key = _songKey(song);
+    if (song.isLocal) {
+      // The file itself is gone or unreadable: walking past it is the only way
+      // the queue can continue, and the round reset gives it another try later.
+      if (_skippedThisRound.add(key)) {
+        _consecutiveSkips++;
+        debugLog?.record('本地文件不可播，本轮跳过 ${song.name}', <String, Object?>{
+          '原因': reason,
+          '路径': song.localPath,
+        });
+      }
+      return;
+    }
     if (!sourceState.hasActiveSource) return;
     if (!_appInForeground && !sourceState.canResolveInBackground) return;
-    _unplayableUntil[_songKey(song)] = DateTime.now().add(_unplayableCooldown);
-    debugLog?.record('暂不可播 ${song.name}', <String, Object?>{
+    // A missing route is a queue-wide problem. Marking the song anyway would let
+    // one bad network walk the whole list into "already played" and stop playback
+    // for good; the caller backs off and retries instead.
+    if (_isQueueLevelFailure(reason)) {
+      debugLog?.record('网络或取链失败，不判死这首歌 ${song.name}', <String, Object?>{
+        '原因': reason,
+        '前台': _appInForeground,
+      });
+      return;
+    }
+    if (_skippedThisRound.contains(key)) return;
+    _skippedThisRound.add(key);
+    _consecutiveSkips++;
+    debugLog?.record('本轮跳过 ${song.name}', <String, Object?>{
       '原因': reason,
-      '冷却': '${_unplayableCooldown.inMinutes}分钟',
+      '本轮已跳': _skippedThisRound.length,
+      '连续跳过': _consecutiveSkips,
       '前台': _appInForeground,
     });
   }
 
-  /// The next [count] upcoming tracks that are not cooling down, in the order an
-  /// automatic advance would use them. The search window is wider than [count] so
-  /// a dead song in front does not shorten the runway.
+  /// Failures that describe the connection or the source pool rather than the
+  /// track: a timeout, an unroutable host, a request the system refused.
+  static bool _isQueueLevelFailure(String text) {
+    final lower = text.toLowerCase();
+    for (final needle in <String>[
+      '网络',
+      '超时',
+      'timeout',
+      'timed out',
+      'socketexception',
+      '连接',
+      '连不上',
+      'unreachable',
+      'not online',
+      'offline',
+      'dns',
+      '代理',
+      'ssl handshake',
+      '无法解析地址',
+    ]) {
+      if (text.contains(needle) || lower.contains(needle)) return true;
+    }
+    return false;
+  }
+
+  /// Whether the runway cache is switched on for this run.
+  bool get preloadRunwayOn => appState.settings.preloadRunway && runway != null;
+
+  /// The runway copy of [song] when the cache is on and holds one — a whole track
+  /// that needs no link, no source and no network to start.
+  String? _runwayPath(Song song) {
+    final cache = runway;
+    if (cache == null || !preloadRunwayOn) return null;
+    return cache.pathFor(_songKey(song));
+  }
+
+  /// Skips already served from local stock during the current wait, so the retry
+  /// cadence cannot re-play the same fallback over and over.
+  final Set<String> _stockTried = <String>{};
+  bool _inStockWait = false;
+  String? _lastFallbackKey;
+
+  /// Nothing in the queue can be started right now, yet the user still wants
+  /// sound.
   ///
-  /// An empty result means *every* candidate is cooling down, and the preloader
-  /// must then prepare nothing: planning a cooled track would re-fail and refresh
-  /// its cooldown on every pass, so a broken source would keep the whole queue
-  /// marked forever instead of letting the entries expire. The boundary still
-  /// tries the plain order through [_nextPlayableIndex].
+  /// The old behaviour cleared the play intent and paused, which stopped the
+  /// silence watchdog (it returns without an intent), showed "paused" on the lock
+  /// screen, and left the headset and car buttons doing nothing until the app was
+  /// opened. Here the intent stays alive so [_checkAudible] keeps retrying on a
+  /// backoff, and anything already on the device gets a chance to play before the
+  /// wait even starts.
+  Future<void> _enterStockWait({
+    Song? song,
+    String? reason,
+    String? error,
+    String? stack,
+    String? url,
+  }) async {
+    if (_inStockWait) return;
+    _inStockWait = true;
+    try {
+      final now = DateTime.now();
+      _nextStockRetryAt = now.add(
+        _appInForeground ? _stockRetryLeadForeground : _stockRetryLeadBackground,
+      );
+      _waitingForStock = true;
+      _isPlaying = false;
+      _errorText = reason;
+      _statusText = '暂无可用资源，正在自动重试（${_skippedThisRound.length} 首已跳过）';
+      // A track that can only be fetched by JavaScript still has to wait for the
+      // foreground; the retry below covers the in-process engine case.
+      _resumeOnForeground = !_appInForeground;
+      debugLog?.record('队列暂无可用资源 ${song?.name ?? _current?.name}', <String, Object?>{
+        '原因': reason,
+        '错误': error,
+        '地址': url,
+        '堆栈': stack,
+        '本轮已跳': _skippedThisRound.length,
+        '连续跳过': _consecutiveSkips,
+        '下次重试': '${_nextStockRetryAt.difference(now).inSeconds}s',
+        '前台': _appInForeground,
+        '已下整曲': runway?.cachedCount,
+      });
+      _notify();
+      // Something on this device may already be playable: a downloaded file of a
+      // later track, or a song from the library. Trying it first is what turns a
+      // silent stall into continuous audio.
+      if (await _playBoundaryStock()) return;
+      await service.pause();
+    } finally {
+      _inStockWait = false;
+    }
+  }
+
+  /// One retry of the queue while it had nothing to play.
+  Future<void> _retryStock() async {
+    if (_disposed || !_waitingForStock || _userPaused) return;
+    _stockTried.clear();
+    _consecutiveSkips = 0;
+    debugLog?.record('重试队列取链', <String, Object?>{
+      '前台': _appInForeground,
+      '本轮已跳': _skippedThisRound.length,
+      '已下整曲': runway?.cachedCount,
+      '当前': _current?.name,
+    });
+    var target = _nextPlayableIndex();
+    // A pass that has walked past every track is a finished round: the sources
+    // have had another minute to come back, so all songs get a fresh chance.
+    if (target == null && _skippedThisRound.isNotEmpty) {
+      _startNewRound();
+      target = _nextPlayableIndex();
+    }
+    if (target != null) {
+      _waitingForStock = false;
+      await playSong(_queue[target],
+          queue: _queue, index: target, reason: '等待资源后重试');
+      return;
+    }
+    // Still nothing the queue can start — local stock is the only sound left.
+    if (await _playBoundaryStock()) return;
+    _nextStockRetryAt = DateTime.now().add(
+      _appInForeground ? _stockRetryLeadForeground : _stockRetryLeadBackground,
+    );
+  }
+
+  /// Start anything already on this device that the queue can still use.
+  ///
+  /// The runway copy of a track the list is about to reach comes first, because
+  /// that is the real queue continuing. Only when the device has none of those
+  /// left does the library fallback take over.
+  Future<bool> _playBoundaryStock() async {
+    if (_disposed || _userPaused || !_shouldPlay) return false;
+    if (_queue.isEmpty || _index < 0) return false;
+    for (final index in _upcoming(count: _maxAdvanceScan)) {
+      if (_disposed || index < 0 || index >= _queue.length) continue;
+      final song = _queue[index];
+      if (appState.isDisliked(song)) continue;
+      final key = _songKey(song);
+      if (_stockTried.contains(key)) continue;
+      if (!song.isLocal && _runwayPath(song) == null) continue;
+      if (song.isLocal && (song.localPath == null || song.localPath!.isEmpty)) continue;
+      _stockTried.add(key);
+      debugLog?.record(
+          song.isLocal ? '边界改播队列内本地曲 ${song.name}' : '边界走整曲文件 ${song.name}',
+          <String, Object?>{
+            '队列位置': index,
+            '前台': _appInForeground,
+            '本轮已跳': _skippedThisRound.length,
+          });
+      _waitingForStock = false;
+      await playSong(song, queue: _queue, index: index, reason: song.isLocal ? '本地兜底' : '整曲缓存');
+      return true;
+    }
+    return _playLibraryFallback();
+  }
+
+  /// A song the device can play without any source at all.
+  Song? _pickLibraryFallback() {
+    final pools = <List<Song>>[
+      libraryState.localPlaylist.songs,
+      libraryState.lovePlaylist.songs,
+      for (final playlist in libraryState.userPlaylists) playlist.songs,
+    ];
+    final currentKey = _current == null ? '' : _songKey(_current!);
+    for (final pool in pools) {
+      for (final song in pool) {
+        if (!song.isLocal) continue;
+        final path = song.localPath;
+        if (path == null || path.isEmpty) continue;
+        final key = _songKey(song);
+        if (key == currentKey || key == _lastFallbackKey) continue;
+        if (!File(path).existsSync()) continue;
+        return song;
+      }
+    }
+    return null;
+  }
+
+  /// Last resort: keep making sound with a song the device already has.
+  ///
+  /// Chosen by the user and downloaded earlier, so it is closer to what they want
+  /// than silence is. The queue itself is left where it was — the playhead does
+  /// not move — so the next boundary resumes the real playlist as soon as the
+  /// sources answer again.
+  Future<bool> _playLibraryFallback() async {
+    final song = _pickLibraryFallback();
+    if (song == null) return false;
+    _lastFallbackKey = _songKey(song);
+    _waitingForStock = true;
+    _nextStockRetryAt = DateTime.now().add(
+      _appInForeground ? _stockRetryLeadForeground : _stockRetryLeadBackground,
+    );
+    debugLog?.record('兜底改播本机已下载的歌 ${song.name}', <String, Object?>{
+      '歌手': song.singer,
+      '队列位置': _index,
+      '前台': _appInForeground,
+      '原因': _errorText,
+    });
+    _current = song;
+    _position = Duration.zero;
+    _duration = Duration.zero;
+    _lyrics = const <LyricLine>[];
+    _activeLine = -1;
+    _errorText = null;
+    _statusText = '音源暂无可用资源，先播本机已下载的歌曲';
+    _notify();
+    // The queue must resume at the same place: this song is not part of it, so
+    // [_index] and the plan are deliberately untouched.
+    await _loadAndPlay(song, reason: '本机兜底');
+    return true;
+  }
+
+  /// A full pass found nothing left to play: the round ends here and every song
+  /// gets another chance.
+  void _startNewRound() {
+    if (_skippedThisRound.isEmpty) return;
+    debugLog?.record('过完一轮，重新给每首歌机会', <String, Object?>{
+      '跳过数量': _skippedThisRound.length,
+      '前台': _appInForeground,
+    });
+    _skippedThisRound.clear();
+  }
+
+  /// The next [count] upcoming tracks that this pass has not given up on, in the
+  /// order an automatic advance would use them. The search window is wider than
+  /// [count] so a dead song in front does not shorten the runway.
+  ///
+  /// An empty result means the whole queue has been walked past: that is the end
+  /// of the round, and the caller decides whether to start a new one. Planning a
+  /// skipped track here would re-fail it on every pass and keep a broken source
+  /// from ever letting the list move on.
   List<int> _upcomingUnmarked({int count = _planSearchWidth}) {
     final result = <int>[];
-    for (final item in _upcoming(count: count + _unplayableUntil.length + 2)) {
+    for (final item in _upcoming(count: count + _skippedThisRound.length + 2)) {
       if (result.length >= count) break;
       if (item < 0 || item >= _queue.length) continue;
       if (_isMarkedUnplayable(_queue[item])) continue;
@@ -960,23 +1318,23 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// The track a failure or an automatic advance should move to, or null when
-  /// nothing can be played right now. Behind the lock screen this only depends
-  /// on cached links when the source script had to fall back to a WKWebView;
-  /// the in-process engine can resolve like it does in the foreground.
+  /// nothing can be started right now. Behind the lock screen this only depends
+  /// on what the device already holds — a downloaded file, a cached link, the
+  /// standby item — when the source script had to fall back to a WKWebView; the
+  /// in-process engine can resolve like it does in the foreground.
+  ///
+  /// Tracks this pass already skipped are never returned: they count as already
+  /// played until the round ends. Returning the plain order anyway was what made
+  /// a single dead song soak up every advance attempt behind the lock screen.
   int? _nextPlayableIndex() {
-    final indices = _upcoming(count: 3);
-    if (indices.isEmpty) return null;
-    // Skip the songs this pass already gave up on. When the whole window is
-    // cooling down the plain order is used again, rather than telling the user
-    // the queue has finished.
-    final unmarked = _upcomingUnmarked(count: 3);
-    final choices = unmarked.isEmpty ? indices : unmarked;
+    final choices = _upcomingUnmarked(count: _maxAdvanceScan);
+    if (choices.isEmpty) return null;
     if (_appInForeground || sourceState.canResolveInBackground) {
       return choices.first;
     }
     for (final item in choices) {
       final song = _queue[item];
-      if (song.isLocal || _hasUsableCache(song)) return item;
+      if (song.isLocal || _playableWithoutSandbox(item)) return item;
     }
     return null;
   }
@@ -986,8 +1344,16 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   void _invalidatePlan() {
     _nextPlan = <int>[];
     // A new queue or a new play order is new evidence: every song gets a clean
-    // pass instead of inheriting the last one's cooldowns.
-    _unplayableUntil.clear();
+    // pass instead of inheriting the last one's verdicts.
+    if (_skippedThisRound.isNotEmpty) {
+      debugLog?.record('队列或模式变化，清空本轮跳过标记', <String, Object?>{
+        '数量': _skippedThisRound.length,
+      });
+    }
+    _skippedThisRound.clear();
+    _consecutiveSkips = 0;
+    _waitingForStock = false;
+    _stockTried.clear();
   }
 
   /// After the index moved, keep whatever is left of the plan that still applies
@@ -1030,9 +1396,10 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   static bool _isGoingStale(_CachedUrl cached, DateTime now) =>
       cached.expiresAt.difference(now) <= _urlRefreshLead;
 
-  void _cacheUrl(String key, String url) {
+  void _cacheUrl(String key, String url, {String type = 'mp3'}) {
     _urlCache[key] = _CachedUrl(
       url: url,
+      type: type,
       expiresAt: DateTime.now().add(_urlTtl),
     );
     if (_urlCache.length <= _maxCachedUrls) return;
@@ -1076,7 +1443,8 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
             );
       final url = '${resolved['url'] ?? ''}';
       if (url.isEmpty) throw StateError('没有获取到播放链接');
-      _cacheUrl(key, url);
+      _cacheUrl(key, url, type: '${resolved['type'] ?? 'mp3'}');
+      unawaited(_stockFromUrl(song));
       return url;
     } catch (error) {
       // A refresh that failed must not lose the song we could still play.
@@ -1089,6 +1457,46 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       }
       rethrow;
     }
+  }
+
+  /// Queue the whole file of a song into the runway cache now that its link is
+  /// known.
+  ///
+  /// Answering immediately, this only starts a transfer when nothing else is
+  /// downloading, so the next tracks are fetched in the background without ever
+  /// competing with the audio the user is hearing. A link is worth minutes; the
+  /// file behind it is worth the whole track boundary.
+  Future<void> _stockFromUrl(Song song) async {
+    final cache = runway;
+    if (cache == null || !preloadRunwayOn || song.isLocal) return;
+    final depth = appState.settings.runwayDepthClamped;
+    if (depth == 0) return;
+    final key = _songKey(song);
+    // Only the few tracks the setting asks for are worth a transfer. Links of the
+    // tracks further ahead are still resolved — they just stay as links until the
+    // playhead gets close enough for the file to matter.
+    final ahead = _upcomingUnmarked(count: depth);
+    if (!ahead.any((index) => _songKey(_queue[index]) == key)) return;
+    if (cache.pathFor(key) != null || cache.isBusy(key)) return;
+    final cached = _urlCache[key];
+    if (cached == null || !cached.expiresAt.isAfter(DateTime.now())) return;
+    await cache.ensure(key: key, url: cached.url, type: cached.type);
+  }
+
+  /// Trim the runway down to the tracks the queue can still reach.
+  ///
+  /// Called at every boundary: what has been heard is deleted, so a long drive
+  /// cannot quietly fill the device with audio that is already in the past, and
+  /// the cache keeps its few slots for the tracks ahead.
+  Future<void> _pruneRunway() async {
+    final cache = runway;
+    if (cache == null || !preloadRunwayOn) return;
+    final ahead = <String>[
+      if (_index >= 0 && _index < _queue.length) _songKey(_queue[_index]),
+      ..._upcomingUnmarked(count: appState.settings.runwayDepthClamped + 1)
+          .map((index) => _songKey(_queue[index])),
+    ];
+    await cache.prune(ahead: ahead);
   }
 
   /// Drop the prepared standby item and forget which track it belonged to.
@@ -1125,9 +1533,14 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
         _queue[plannedIndex].source == plannedSong.source &&
         !_isMarkedUnplayable(plannedSong)) {
       // Already decided and resolved; `_armPreparedNext` only has to make sure
-      // the standby is (or will be) loaded. A local path never expires; a
-      // remote link is only reused while it is loaded or still cached.
-      if (plannedSong.isLocal || service.hasPrepared(plannedUrl)) return;
+      // the standby is (or will be) loaded. A file — the song's own or a runway
+      // copy — never expires; a remote link is only reused while it is loaded or
+      // still cached.
+      if (plannedSong.isLocal ||
+          _isLocalPath(plannedUrl) ||
+          service.hasPrepared(plannedUrl)) {
+        return;
+      }
       final cached = _urlCache[_songKey(plannedSong)];
       if (cached != null &&
           cached.url == plannedUrl &&
@@ -1158,12 +1571,25 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
         return;
       }
 
+      // A downloaded file is the best possible standby: the boundary then opens a
+      // file, and neither an expiring link nor a source that stopped answering can
+      // reach it. Prefer it over the remote address even when both are available.
+      final runwayPath = _runwayPath(song);
+      if (runwayPath != null) {
+        _plannedNextSong = song;
+        _plannedNextIndex = nextIndex;
+        _plannedNextUrl = runwayPath;
+        unawaited(_prefetchLookahead());
+        return;
+      }
+
       final key = _songKey(song);
       final cached = _urlCache[key];
       if (cached != null && cached.expiresAt.isAfter(DateTime.now())) {
         _plannedNextSong = song;
         _plannedNextIndex = nextIndex;
         _plannedNextUrl = cached.url;
+        unawaited(_stockFromUrl(song));
         // Keep filling the cache for the tracks after this one while JavaScript
         // still runs.
         unawaited(_prefetchLookahead());
@@ -1184,14 +1610,15 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
           _markUnplayable(song, '所有源都没有返回播放链接');
           continue;
         }
-        _cacheUrl(key, url);
+        _cacheUrl(key, url, type: '${resolved['type'] ?? 'mp3'}');
+        unawaited(_stockFromUrl(song));
         _plannedNextSong = song;
         _plannedNextIndex = nextIndex;
         _plannedNextUrl = url;
         debugLog?.record('预热下一首 ${song.name}', <String, Object?>{
           '队列位置': nextIndex,
           '前台': _appInForeground,
-          '本轮已跳过': _unplayableUntil.length,
+          '本轮已跳过': _skippedThisRound.length,
         });
         unawaited(_prefetchLookahead());
         return;
@@ -1216,7 +1643,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     final url = _plannedNextUrl;
     if (_disposed || song == null || url == null || url.isEmpty) return;
     if (service.hasPrepared(url)) return;
-    if (song.isLocal) {
+    if (song.isLocal || _isLocalPath(url)) {
       unawaited(service.preloadFile(url));
     } else {
       unawaited(service.preloadUrl(url));
@@ -1294,10 +1721,15 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
           _markUnplayable(song, '所有源都没有返回播放链接');
           continue;
         }
-        _cacheUrl(key, url);
+        _cacheUrl(key, url, type: '${resolved['type'] ?? 'mp3'}');
+        // The link is only worth minutes; its file is worth the whole track. This
+        // is where a deep runway actually gets filled — one download at a time,
+        // behind whatever the player is already doing.
+        unawaited(_stockFromUrl(song));
         debugLog?.record('预取链接成功 ${song.name}', <String, Object?>{
           '队列位置': index,
           '有效期': '${_urlTtl.inMinutes}分钟',
+          '已下整曲': runway?.cachedCount,
         });
       } catch (error) {
         // Preloading is best effort, but a song no source can serve is worth
@@ -1329,6 +1761,9 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     if (_disposed) return;
     _armPreparedNext();
     unawaited(_prefetchLookahead());
+    // A boundary or a fresh plan means the order moved: drop what the playhead
+    // has left behind so the cache keeps its slots for the tracks still to come.
+    unawaited(_pruneRunway());
   }
 
   /// A link can fail only once the player starts reading its stream (an expired
@@ -1357,10 +1792,18 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       // the load path uses so a wholly unplayable queue cannot loop.
       _urlCache.remove(_songKey(song));
       _markUnplayable(song, _friendlyError(message));
-      if (_autoSkips < _queue.length - 1) {
-        _autoSkips++;
+      if (_consecutiveSkips < _maxConsecutiveSkips) {
         _playErrorAttempts = 0;
         unawaited(next(auto: true));
+      } else {
+        // Every candidate died on its stream in a row: the queue is out of
+        // playable tracks, not just this one. Back off and keep trying instead of
+        // stopping on a song the player refuses to buffer.
+        unawaited(_enterStockWait(
+          song: song,
+          reason: _friendlyError(message),
+          error: message,
+        ));
       }
       return;
     }
@@ -1461,6 +1904,13 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     final processing = service.player.processingState;
+    if (_waitingForStock && !_handedOff) {
+      // The play button while the queue has nothing to say: run the recovery
+      // immediately instead of re-loading the single song that failed.
+      _nextStockRetryAt = DateTime.fromMillisecondsSinceEpoch(0);
+      await _retryStock();
+      return;
+    }
     if (_shouldPlay && processing != ProcessingState.ready) {
       // The button says playing while the native player holds nothing playable.
       // That tap means "give me sound", not "pause" — re-arm the pipeline in
@@ -1485,6 +1935,13 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     _userPaused = false;
     if (_current == null) {
       await togglePlay();
+      return;
+    }
+    if (_waitingForStock) {
+      // The queue was empty of playable tracks; the lock-screen play button
+      // means "try again now", so skip the rest of the backoff.
+      _nextStockRetryAt = DateTime.fromMillisecondsSinceEpoch(0);
+      await _retryStock();
       return;
     }
     final processing = service.player.processingState;
@@ -1617,6 +2074,17 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     return _hasUsableCache(song);
   }
 
+  /// The track a skip lands on when the plain order cannot be started: the
+  /// intended target first, then the closest later track this device can play
+  /// without a source — its downloaded file, a live link, or the standby item.
+  int? _findStockForSkip({required int start}) {
+    if (_playableWithoutSandbox(start)) return start;
+    for (final item in _upcomingUnmarked(count: _maxAdvanceScan)) {
+      if (_playableWithoutSandbox(item)) return item;
+    }
+    return null;
+  }
+
   Future<void> next({bool auto = false}) async {
     _userPaused = false;
     if (_queue.isEmpty) return;
@@ -1634,19 +2102,22 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     // prepared. That is what lets the lock-screen next button start instantly
     // instead of waiting for a fresh network round trip.
     int nextIndex;
-    var waitingForForeground = false;
     if (auto) {
-      final plan = _upcoming(count: 3);
       final playable = _nextPlayableIndex();
-      if (playable == null && !_appInForeground && plan.isNotEmpty) {
-        // There are more tracks, but none of their links can be resolved while
-        // the source sandbox is frozen behind the lock screen. Pause now and let
-        // the foreground resume continue the queue — do not hand the loader a
-        // track that can only sit in two timeouts and go silent.
-        waitingForForeground = true;
+      if (playable != null) {
+        nextIndex = playable;
+      } else if (_upcoming(count: 1).isEmpty) {
+        // The list genuinely ran out (顺序播放 past its last track). Only this
+        // case may end playback.
         nextIndex = -1;
       } else {
-        nextIndex = playable ?? (plan.isEmpty ? -1 : plan.first);
+        // There are tracks left, but nothing this pass can start: no link, no
+        // standby, no downloaded file. This used to pause and clear the play
+        // intent, which silenced the lock screen, disarmed the watchdog, and made
+        // the headset and car buttons inert until the app was opened again.
+        // Keep the intent and let the retry cadence own it instead.
+        await _enterStockWait(reason: _errorText);
+        return;
       }
     } else {
       // Manual skips follow the same precomputed order as auto-advance, so the
@@ -1672,52 +2143,39 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
         candidate = _indexAfter(candidate, auto: false);
         attempts++;
       }
-      if (!_appInForeground &&
-          candidate >= 0 &&
-          candidate < _queue.length &&
-          !_playableWithoutSandbox(candidate)) {
+      if (!_appInForeground && !_playableWithoutSandbox(candidate)) {
         // With a WebView fallback the source sandbox is frozen behind the lock
-        // screen: a fresh resolve can only time out and leave the car silent.
-        // Prefer another upcoming track whose link is already in hand; if none
-        // is, keep the current audio playing rather than stopping it for a
-        // command we cannot honour.
-        int? fallback;
-        for (final item in _upcoming(count: 6)) {
-          if (_playableWithoutSandbox(item)) {
-            fallback = item;
-            break;
-          }
-        }
-        if (fallback != null) {
-          candidate = fallback;
-        } else {
-          debugLog?.record('后台切歌无可用链接，保持当前播放', <String, Object?>{
+        // screen, so a fresh resolve can only time out and leave the car silent.
+        // Take the next track this device can start without it; and when there is
+        // none, still move the queue — a headset or car button that answers with
+        // "下一首链接尚未准备好" and nothing else is the failure being fixed here.
+        final stock = _findStockForSkip(start: candidate);
+        if (stock == null) {
+          debugLog?.record('后台切歌无现成资源，改为立即推进', <String, Object?>{
             '当前': _current?.name,
-            '目标': _queue[candidate].name,
+            '目标': candidate >= 0 && candidate < _queue.length
+                ? _queue[candidate].name
+                : null,
             '预排': _plannedNextSong?.name,
             '模式': playMode.label,
+            '本轮已跳': _skippedThisRound.length,
+            '已下整曲': runway?.cachedCount,
           });
-          _statusText = '下一首链接尚未准备好';
-          _notify();
+          // The advance owns the recovery: it re-derives the order, walks past
+          // what this pass skipped, and falls back to local stock.
+          _waitingForStock = false;
+          await next(auto: true);
           return;
         }
+        candidate = stock;
       }
       nextIndex = candidate;
     }
     if (nextIndex < 0 || nextIndex >= _queue.length) {
       _isPlaying = false;
       _shouldPlay = false;
-      if (waitingForForeground) {
-        // Not the end of the queue: the next link simply cannot be fetched
-        // while the app is behind the lock screen. Keep the play intent so the
-        // foreground resume advances automatically instead of waiting for
-        // another tap on play.
-        _resumeOnForeground = true;
-        _statusText = '锁屏时取不到下一首链接，解锁后继续';
-      } else {
-        _userPaused = true;
-        _statusText = '播放完毕';
-      }
+      _userPaused = true;
+      _statusText = '播放完毕';
       await service.pause();
       _notify();
       return;
@@ -1856,9 +2314,11 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     _shouldPlay = true;
     _userPaused = false;
     _playErrorAttempts = 0;
-    _autoSkips = 0;
-    // It is audible now, so its cooldown no longer applies.
-    _unplayableUntil.remove(_songKey(song));
+    // It is audible now, so this pass's verdict on it no longer applies.
+    _skippedThisRound.remove(_songKey(song));
+    _consecutiveSkips = 0;
+    _waitingForStock = false;
+    _stockTried.clear();
     _watchPosition = service.player.position;
     _silentHeals = 0;
     _lastProgressChangeAt = DateTime.now();
@@ -1897,17 +2357,22 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     final activeId = sourceState.active?.id;
     if (activeId != _lastActiveSourceId) {
       _lastActiveSourceId = activeId;
-      // The cooling-down verdicts were earned against the previous script. A
-      // different source may well serve the very same songs, so let every track
-      // compete again instead of skipping them for ten minutes.
-      if (_unplayableUntil.isNotEmpty) {
-        debugLog?.record('换源，清除不可播标记', <String, Object?>{
-          '数量': _unplayableUntil.length,
+      // The skip verdicts were earned against the previous script. A different
+      // source may well serve the very same songs, so let every track compete
+      // again instead of staying out of the plan.
+      if (_skippedThisRound.isNotEmpty) {
+        debugLog?.record('换源，清空本轮跳过标记', <String, Object?>{
+          '数量': _skippedThisRound.length,
           '新源': sourceState.active?.name,
         });
       }
-      _unplayableUntil.clear();
+      _skippedThisRound.clear();
+      _consecutiveSkips = 0;
+      _stockTried.clear();
       _armChain = 0;
+      // Waiting for stock was a verdict on the old source; give it a fresh
+      // attempt now instead of sitting out the rest of the backoff.
+      if (_waitingForStock) _nextStockRetryAt = DateTime.fromMillisecondsSinceEpoch(0);
     }
     if (_loading || willPlay || _userPaused) return;
     if (_errorText == null) return;
@@ -2001,6 +2466,14 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     // intended state is "playing". The watchdog needs that intent to cover the
     // resumed stream as well.
     _shouldPlay = true;
+    if (_waitingForStock) {
+      // The queue had nothing playable when the app went away. JavaScript runs
+      // again, so retry the queue itself rather than reloading the one song that
+      // failed — that is what the waiting backoff was standing in for.
+      _nextStockRetryAt = DateTime.fromMillisecondsSinceEpoch(0);
+      unawaited(_retryStock());
+      return;
+    }
     final owned = await _activateSession(reason: '回前台');
     if (_disposed) return;
 
@@ -2168,7 +2641,6 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> clearQueue() async {
     _playToken++;
-    _autoSkips = 0;
     _shouldPlay = false;
     _invalidatePlan();
     _invalidatePreload();
@@ -2248,8 +2720,13 @@ class _CachedUrl {
   const _CachedUrl({
     required this.url,
     required this.expiresAt,
+    this.type = 'mp3',
   });
 
   final String url;
   final DateTime expiresAt;
+
+  /// The container the source handed out with the link, kept so the runway cache
+  /// can name its file the way the player expects.
+  final String type;
 }

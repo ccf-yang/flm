@@ -16,6 +16,7 @@ import 'services/http_bridge.dart';
 import 'services/local_music_service.dart';
 import 'services/online_engine.dart';
 import 'services/player_service.dart';
+import 'services/runway_cache.dart';
 import 'state/app_state.dart';
 import 'state/discover_state.dart';
 import 'state/library_state.dart';
@@ -65,6 +66,10 @@ Future<void> main() async {
   final debugLog = DebugLog(enabled: appState.settings.debugEnabled);
   httpBridge.debugLog = debugLog;
   final onlineEngine = OnlineEngine(httpBridge)..debugLog = debugLog;
+  // Hidden cache of the next few tracks' whole files, so a track boundary is a
+  // local file open instead of a bet that one remote link still answers.
+  final runwayCache = RunwayCache(debugLog: debugLog);
+  unawaited(runwayCache.warmUp());
   final sourceState = SourceState(
     repository: customSourceRepository,
     http: httpBridge,
@@ -82,6 +87,7 @@ Future<void> main() async {
     appState: appState,
     libraryState: libraryState,
     onlineEngine: onlineEngine,
+    runway: runwayCache,
     debugLog: debugLog,
   );
   final searchState = SearchState(engine: onlineEngine, appState: appState);
@@ -118,6 +124,7 @@ Future<void> main() async {
         ChangeNotifierProvider<SearchState>.value(value: searchState),
         ChangeNotifierProvider<DiscoverState>.value(value: discoverState),
         Provider<OnlineEngine>.value(value: onlineEngine),
+        Provider<RunwayCache>.value(value: runwayCache),
         Provider<FlmPlayerService>.value(value: playerService),
         Provider<BackupService>.value(value: backupService),
         ChangeNotifierProvider<DebugLog>.value(value: debugLog),
