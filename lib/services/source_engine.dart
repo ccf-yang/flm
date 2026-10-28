@@ -97,6 +97,18 @@ class SourceEngine implements MusicSourceEngine {
     _pageReady = Completer<void>();
     await _controller.loadFlutterAsset('assets/js/user_source.html');
     await _pageReady!.future.timeout(const Duration(seconds: 30));
+    // The page is up and `lx_setup` is armed, so this sandbox is ready for every
+    // later request. Forgetting this line made `_loaded` stay false for the whole
+    // life of a WebView source (nothing else ever calls `load()`), which meant
+    // *every* musicUrl request reloaded the page and re-ran setup. That is cheap
+    // in the foreground — one observed round trip was 400–950 ms — but fatal in
+    // the background: an off-screen WebView gets no `onPageFinished` once the
+    // renderer is throttled, so each request waited the full 30 s of the page-ready
+    // timeout and died there, and the reload also threw every other in-flight
+    // request out with 「自定义源已切换». Executing JavaScript in an already loaded
+    // page *does* keep working behind the lock screen (measured 956 ms), which is
+    // exactly the path this flag now keeps alive.
+    _loaded = true;
 
     _current = info;
     _script = script;

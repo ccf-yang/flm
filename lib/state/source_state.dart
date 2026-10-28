@@ -845,6 +845,22 @@ class SourceState extends ChangeNotifier with WidgetsBindingObserver {
     return _resolveVia(source, song, quality: quality);
   }
 
+  /// Longest one candidate may hold a budgeted walk before the next source is
+  /// asked.
+  ///
+  /// The engine's own wait is 30 s, while a background walk gets 12 s. The walk
+  /// only checked its deadline *between* candidates, so a single hung attempt
+  /// burned the whole budget and the walk ended as 「取链已超过时限」 without a second
+  /// source ever being asked — measured, 119 of 128 background walks touched
+  /// exactly one source, and none reached two. That is why "访问不了就换一首/换一个源"
+  /// never fired behind the lock screen. A live source answers in well under 2 s
+  /// (406–956 ms in the same log), so this ceiling costs the healthy path nothing
+  /// and buys two more candidates inside the same budget.
+  static const Duration _attemptCeiling = Duration(seconds: 5);
+
+  /// Below this the walk has no time left worth an attempt.
+  static const Duration _attemptFloor = Duration(seconds: 2);
+
   Future<Map<String, dynamic>> _resolveVia(
     CustomSourceInfo source,
     Song song, {
@@ -890,19 +906,37 @@ class SourceState extends ChangeNotifier with WidgetsBindingObserver {
     Object? lastError;
     for (final currentQuality in tryQualitys) {
       _throwIfResolveAborted(generation: generation, deadline: deadline);
+      final remaining = deadline?.difference(DateTime.now());
+      // Less than the floor left is not worth starting an attempt for: it would
+      // be abandoned on the spot and would report a source that never got asked.
+      if (remaining != null && remaining < _attemptFloor) {
+        throw StateError('取链已超过时限');
+      }
+      final cap = remaining == null
+          ? null
+          : (remaining < _attemptCeiling ? remaining : _attemptCeiling);
       final attemptId = 'url_${DateTime.now().microsecondsSinceEpoch % 100000}';
       final attemptStarted = DateTime.now();
       debugLog?.record('解析 $attemptId → ${source.name}', <String, Object?>{
         '歌曲': '${song.name} - ${song.singer}',
         '平台': song.source,
         '音质': currentQuality,
+        '这次上限': cap == null ? '不限' : '${cap.inSeconds}s',
       });
       try {
-        final result = await slot.engine.requestMusicUrl(
+        final request = slot.engine.requestMusicUrl(
           source: song.source,
           quality: currentQuality,
           song: song,
         );
+        final result = cap == null
+            ? await request
+            : await request.timeout(
+                cap,
+                onTimeout: () => throw TimeoutException(
+                  '该源 ${cap.inSeconds}s 内没有结果，已换下一个源',
+                ),
+              );
         slot.lastUsed = DateTime.now();
         final data = result['data'];
         if (data is! Map) throw StateError('自定义源返回格式错误');
