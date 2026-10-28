@@ -53,14 +53,17 @@ class FlmAudioHandler extends BaseAudioHandler {
 
   @override
   Future<void> skipToNext() async {
+    // Acknowledged without waiting. The controller does the work itself, and a
+    // command handler that stays pending on a link fetch is what makes a
+    // headset or car "next" press look like it did nothing at all.
     final callback = _service.onSkipNext;
-    if (callback != null) await callback();
+    if (callback != null) unawaited(callback());
   }
 
   @override
   Future<void> skipToPrevious() async {
     final callback = _service.onSkipPrevious;
-    if (callback != null) await callback();
+    if (callback != null) unawaited(callback());
   }
 
   @override
@@ -68,15 +71,17 @@ class FlmAudioHandler extends BaseAudioHandler {
     // Many car head units map their steering-wheel "next" button to the
     // fast-forward/seek-forward AVRCP command rather than to skipToNext. The
     // app never exposes a fast-forward control (only previous/play/next), so
-    // treating seek-forward as "next track" is what the driver expects.
+    // treating seek-forward as "next track" is what the driver expects. The
+    // controller's short debounce folds a press that arrives as both commands
+    // into one song change.
     final callback = _service.onSkipNext;
-    if (callback != null) await callback();
+    if (callback != null) unawaited(callback());
   }
 
   @override
   Future<void> rewind() async {
     final callback = _service.onSkipPrevious;
-    if (callback != null) await callback();
+    if (callback != null) unawaited(callback());
   }
 }
 

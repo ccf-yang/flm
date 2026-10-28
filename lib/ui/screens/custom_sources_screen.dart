@@ -350,9 +350,9 @@ class CustomSourcesScreen extends StatelessWidget {
                 _ProbeSettingRow(
                   title: '单个源超时',
                   value: '${timeout}s',
-                  hint: timeout <= 12
-                      ? '很激进：反应慢一点的脚本也会被判成取不到链，直接禁用。网络一般就别设这么低。'
-                      : timeout >= 60
+                  hint: timeout <= 8
+                      ? '最快（默认）：8 秒内没结果就判取不到链、直接禁用。脚本反应慢或网络差时容易误杀，往上调就是买命中率。'
+                      : timeout >= 45
                           ? '很慢很稳：适合网络差、脚本反应迟的场合，整批耗时会拉长。'
                           : '一个源最多花这么久，到点还没结果的按「取不到链」处理，一并禁用。',
                   slider: Slider(
@@ -376,14 +376,14 @@ class CustomSourcesScreen extends StatelessWidget {
                   value: '$workers 路',
                   hint: workers == 1
                       ? '一次只测一个：最省内存，也最慢。'
-                      : workers >= 5
+                      : workers >= 6
                           ? '每个并发都会开一个脚本沙箱，手机发烫或内存紧张就调低。'
                           : '并发越高整批越快，代价是同时运行多个脚本沙箱。',
                   slider: Slider(
                     value: workers.toDouble(),
                     min: 1,
-                    max: 6,
-                    divisions: 5,
+                    max: 8,
+                    divisions: 7,
                     label: '$workers',
                     activeColor: accentFor(context),
                     onChanged: (next) {
@@ -396,8 +396,8 @@ class CustomSourcesScreen extends StatelessWidget {
                 ),
                 const SizedBox(height: 10),
                 Text(
-                  '参考：30 个源、3 路并发、每个 20s，通常两三分钟跑完；'
-                  '调到 6 路并发约能快一半。',
+                  '参考：30 个源、8 路并发、每个 8s，一般一分钟内跑完；'
+                  '内存紧张或手机发烫就降到 3 路，代价是整批慢一倍左右。',
                   style: TextStyle(fontSize: 10.5, height: 1.6, color: faintFor(context)),
                 ),
               ],

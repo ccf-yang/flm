@@ -92,11 +92,15 @@ class OnlineEngine {
   Future<dynamic> call(String action, [Map<String, dynamic> params = const <String, dynamic>{}]) async {
     final startedAt = DateTime.now();
     final source = params['source'] ?? '';
-    debugLog?.record('在线请求 $action · $source', <String, Object?>{
-      '参数': params.entries
-          .where((e) => e.key != 'song' && e.key != 'list' && e.key != 'page' && e.key != 'limit')
-          .join(', '),
-    });
+    // Only what can hold playback up gets a line. Every call used to be logged with
+    // its arguments, which pushed the playback trace off the debug page.
+    if (action == 'musicUrl') {
+      final song = params['song'];
+      debugLog?.record('在线取链 · $source', <String, Object?>{
+        '歌曲': song is Map ? '${song['name']} - ${song['singer']}' : '$song',
+        '音质': params['quality'],
+      });
+    }
     await load();
     final id = ++_sequence;
     final completer = Completer<dynamic>();
@@ -115,10 +119,12 @@ class OnlineEngine {
     }
     try {
       final result = await completer.future.timeout(const Duration(seconds: 35));
-      debugLog?.record(
-          '在线完成 $action · $source', <String, Object?>{
-        '耗时': '${DateTime.now().difference(startedAt).inMilliseconds}ms',
-      });
+      final elapsed = DateTime.now().difference(startedAt).inMilliseconds;
+      if (action == 'musicUrl' || elapsed > 5000) {
+        debugLog?.record('在线完成 $action · $source', <String, Object?>{
+          '耗时': '${elapsed}ms',
+        });
+      }
       return result;
     } on TimeoutException {
       _pending.remove(id);

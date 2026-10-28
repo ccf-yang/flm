@@ -8,10 +8,14 @@ import '../../services/debug_log.dart';
 import '../../state/app_state.dart';
 import '../kit.dart';
 
-/// Raw request dump for debugging. The display box stays empty until the
-/// debug switch in settings is turned on; afterwards every HTTP request made
-/// for the source sandboxes (url / headers / body / response) and every
-/// source-resolution event is appended here, separated by two blank lines.
+/// What the player did, newest last, for handing to the developer.
+///
+/// Every line is a playback decision: a skip from the lock screen / headset / car
+/// head unit, a link resolve and why it stopped, a boundary promotion, a watchdog
+/// re-arm, plus the source batch pipeline. The old HTTP url/headers/body dump is
+/// gone. The log is also written to `Documents/Debug/playback.log`, so the run
+/// that stalled *before* the app was killed can still be copied out here — the
+/// previous session's tail is read back at startup.
 class DebugScreen extends StatelessWidget {
   const DebugScreen({super.key});
 
@@ -62,7 +66,7 @@ class DebugScreen extends StatelessWidget {
                       Expanded(
                         child: Text(
                           debug.enabled
-                              ? '记录中 · ${debug.entries.length} 条（最多保留 500 条，关闭只暂停不清空）'
+                              ? '记录中 · ${debug.entries.length} 条（最多 ${debug.maxEntries} 条，同时写入本机文件，关掉只暂停不清空）'
                               : '记录已暂停 · 历史日志保留，点右上角垃圾桶可清空',
                           style: TextStyle(
                             fontSize: 11.5,
@@ -96,7 +100,10 @@ class DebugScreen extends StatelessWidget {
                     child: empty
                         ? Center(
                             child: Text(
-                              '打开开关后，这里会实时显示所有请求的\nURL / 头部 / Body / 响应',
+                              '这里逐条记录后台播放与切歌的经过：\n'
+                              '远程命令、取链到哪一步、边界换曲、\n'
+                              '静音看门狗做了什么\n'
+                              '（日志同时存本机文件，重启后还能看到上一次）',
                               textAlign: TextAlign.center,
                               style: TextStyle(
                                 fontSize: 12,

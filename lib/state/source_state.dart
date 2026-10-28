@@ -329,6 +329,22 @@ class SourceState extends ChangeNotifier with WidgetsBindingObserver {
   /// Why the previous cross-source resolution failed (null after a success).
   String? get lastPoolError => _lastPoolError;
 
+  /// Bumped by [cancelResolutions]; a pool walk compares it between candidates and
+  /// gives up when it no longer matches the generation it started with.
+  int _resolveGeneration = 0;
+
+  /// Give up on the cross-source pool walk currently in flight.
+  ///
+  /// A skip pressed on a headset or a car head unit has to be able to take over.
+  /// Without this the abandoned walk keeps going through every remaining source —
+  /// each with its own quality ladder and its own engine timeout — so the queue
+  /// stays parked on a song nobody is waiting for, and the next tap queues behind
+  /// it instead of fetching a link.
+  void cancelResolutions({String? reason}) {
+    _resolveGeneration++;
+    debugLog?.record('取消进行中的取链', <String, Object?>{'原因': reason});
+  }
+
   bool get loading => _initializing.containsKey(active?.id ?? '');
 
   /// Controllers of every live sandbox. [EngineHost] must keep these mounted
@@ -815,6 +831,8 @@ class SourceState extends ChangeNotifier with WidgetsBindingObserver {
     CustomSourceInfo source,
     Song song, {
     String? quality,
+    int? generation,
+    DateTime? deadline,
   }) async {
     final slot = _slots[source.id];
     if (slot == null) {
@@ -853,7 +871,9 @@ class SourceState extends ChangeNotifier with WidgetsBindingObserver {
 
     Object? lastError;
     for (final currentQuality in tryQualitys) {
+      _throwIfResolveAborted(generation: generation, deadline: deadline);
       final attemptId = 'url_${DateTime.now().microsecondsSinceEpoch % 100000}';
+      final attemptStarted = DateTime.now();
       debugLog?.record('解析 $attemptId → ${source.name}', <String, Object?>{
         '歌曲': '${song.name} - ${song.singer}',
         '平台': song.source,
@@ -881,7 +901,8 @@ class SourceState extends ChangeNotifier with WidgetsBindingObserver {
               ? '请求失败（仍尝试播放）'
               : 'HTTP ${probe.status} ${probe.contentType.isEmpty ? '未知类型' : probe.contentType}',
           '长度': probe.length < 0 ? '未知' : probe.length,
-          '耗时': '${probe.elapsedMs}ms',
+          '脚本耗时': '${DateTime.now().difference(attemptStarted).inMilliseconds}ms',
+          '探测耗时': '${probe.elapsedMs}ms',
         });
         if (probe.rejected) {
           throw StateError('返回的链接已失效（HTTP ${probe.status}）');
@@ -898,10 +919,22 @@ class SourceState extends ChangeNotifier with WidgetsBindingObserver {
         debugLog?.record('解析失败 $attemptId → ${source.name}', <String, Object?>{
           '音质': currentQuality,
           '原因': '$error',
+          '耗时': '${DateTime.now().difference(attemptStarted).inMilliseconds}ms',
         });
       }
     }
     throw lastError ?? StateError('自定义源没有返回播放链接');
+  }
+
+  /// Raised between attempts of one resolve so a forced skip does not have to wait
+  /// out the rest of the ladder.
+  void _throwIfResolveAborted({int? generation, DateTime? deadline}) {
+    if (generation != null && generation != _resolveGeneration) {
+      throw StateError('取链已被新的播放请求取消');
+    }
+    if (deadline != null && DateTime.now().isAfter(deadline)) {
+      throw StateError('取链已超过时限');
+    }
   }
 
   /// Resolve a playable URL while keeping the user's selection untouched.
@@ -914,6 +947,7 @@ class SourceState extends ChangeNotifier with WidgetsBindingObserver {
     Song song, {
     String? quality,
     bool background = false,
+    Duration? budget,
   }) async {
     if (song.isLocal) {
       return <String, dynamic>{'url': song.localPath, 'type': 'local'};
@@ -932,11 +966,16 @@ class SourceState extends ChangeNotifier with WidgetsBindingObserver {
     }
 
     _lastPoolError = null;
+    final generation = _resolveGeneration;
+    final startedAt = DateTime.now();
+    final deadline = budget == null ? null : startedAt.add(budget);
     debugLog?.record('取链开始 ${song.name} - ${song.singer}', <String, Object?>{
       '平台': song.source,
       '首选源': selected.name,
       '可用源': enabled.length,
       '已禁用': sources.length - enabled.length,
+      '后台': background,
+      '预算': budget == null ? '不限' : '${budget.inSeconds}s',
     });
 
     final candidates = <CustomSourceInfo>[selected];
@@ -950,7 +989,24 @@ class SourceState extends ChangeNotifier with WidgetsBindingObserver {
     candidates.addAll(others);
 
     Object? lastError;
+    var tried = 0;
     for (final candidate in candidates) {
+      tried++;
+      // Checked *between* sources as well as between qualities: one source alone
+      // can burn tens of seconds, and a user who already skipped past this song
+      // must not pay for the rest of the list.
+      final aborted = generation != _resolveGeneration ||
+          (deadline != null && DateTime.now().isAfter(deadline));
+      if (aborted) {
+        final cancelled = generation != _resolveGeneration;
+        debugLog?.record('取链中止 ${song.name}', <String, Object?>{
+          '原因': cancelled ? '被新的播放请求取消' : '超过预算 ${budget?.inSeconds ?? 0}s',
+          '已试源': tried,
+          '剩余源': candidates.length - tried,
+          '耗时': '${DateTime.now().difference(startedAt).inMilliseconds}ms',
+        });
+        throw StateError(cancelled ? '取链已被新的播放请求取消' : '取链已超过时限');
+      }
       final existing = _slots[candidate.id];
       // Behind the lock screen a WebView sandbox cannot answer: its JavaScript
       // is frozen. Skipping those candidates immediately beats waiting for a
@@ -971,10 +1027,22 @@ class SourceState extends ChangeNotifier with WidgetsBindingObserver {
         continue;
       }
       try {
-        final resolved = await _resolveVia(candidate, song, quality: quality);
+        final resolved = await _resolveVia(
+          candidate,
+          song,
+          quality: quality,
+          generation: generation,
+          deadline: deadline,
+        );
         _supported.putIfAbsent(candidate.id, () => <String>{}).add(song.source);
         return resolved;
       } catch (error) {
+        // An abort is not a source failure — walking on to the next source would
+        // rebuild exactly the delay the cancellation was meant to remove.
+        if (generation != _resolveGeneration ||
+            (deadline != null && DateTime.now().isAfter(deadline))) {
+          rethrow;
+        }
         lastError = error;
         _lastPoolError = '${candidate.name}: $error';
       }
@@ -982,7 +1050,9 @@ class SourceState extends ChangeNotifier with WidgetsBindingObserver {
     final failure = lastError ?? StateError('没有可用的自定义源返回播放链接');
     debugLog?.record('取链全部失败 ${song.name}', <String, Object?>{
       '最后错误': _lastPoolError ?? '$failure',
-      '尝试源数': candidates.length,
+      '已试源': tried,
+      '候选源': candidates.length,
+      '耗时': '${DateTime.now().difference(startedAt).inMilliseconds}ms',
     });
     throw failure;
   }

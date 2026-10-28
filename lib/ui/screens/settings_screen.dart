@@ -343,8 +343,8 @@ class SettingsScreen extends StatelessWidget {
                             icon: CupertinoIcons.wrench,
                             label: '调试',
                             caption: settings.debugEnabled
-                                ? '请求记录开启中 · 点击查看日志'
-                                : '记录所有请求的 URL / 头部 / Body，便于排查',
+                                ? '播放与切歌记录开启中 · 点击查看日志'
+                                : '逐条记录后台播放、切歌和远程命令，卡住时拿来定位',
                             trailing: IgnorePointer(
                               child: CupertinoSwitch(
                                 value: settings.debugEnabled,
@@ -734,7 +734,7 @@ class _IntroCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  '版本 1.0.8 · 安静的光，随处可听',
+                  '版本 1.0.9 · 安静的光，随处可听',
                   style: TextStyle(fontSize: 11, color: mutedFor(context)),
                 ),
               ],

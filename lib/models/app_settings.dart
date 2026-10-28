@@ -70,10 +70,14 @@ class AppSettings {
     this.miniPlayerShape = 'circle',
     this.miniPlayerColor = 'mint',
     this.miniPlayerUseImageColor = true,
-    this.debugEnabled = false,
+    this.debugEnabled = true,
     this.showPlatformFilter = true,
-    this.probeTimeoutSeconds = 30,
-    this.probeConcurrency = 3,
+    // Tuned for 快速淘汰坏源: a script that cannot answer within 8s is written off,
+    // and 8 sandboxes run side by side so a whole 30-source pass stays under a
+    // minute or two. Both stay adjustable on the 自定义源 page.
+    this.probeTimeoutSeconds = 8,
+    this.probeConcurrency = 8,
+    this.probeTuningV2Applied = false,
     this.autoSourceRefresh = true,
     this.lastSourceRefreshAt = 0,
     List<String>? visibleSources,
@@ -121,6 +125,13 @@ class AppSettings {
   int probeTimeoutSeconds;
   /// How many sources batch detection works on at the same time.
   int probeConcurrency;
+  /// Whether this device has been moved onto the current batch-detection defaults.
+  ///
+  /// A phone stores whatever it was given the first time, so changing the shipped
+  /// defaults alone would never reach it. The first launch after the change resets
+  /// the two numbers once and sets this flag; anything the user tunes afterwards
+  /// is kept.
+  bool probeTuningV2Applied;
   /// Pull the *whole file* of the next few tracks into a hidden playback cache,
   /// so a track boundary is a local file open instead of a bet on one remote link
   /// still answering. Off it stays at links-only, which costs no data at the
@@ -151,7 +162,7 @@ class AppSettings {
   /// Batch detection limits, clamped so a hand-edited settings.json cannot make
   /// the pass hang (way too long) or trash every source (way too short).
   int get probeTimeoutClamped => probeTimeoutSeconds.clamp(8, 90);
-  int get probeConcurrencyClamped => probeConcurrency.clamp(1, 6);
+  int get probeConcurrencyClamped => probeConcurrency.clamp(1, 8);
   Duration get probeDeadline => Duration(seconds: probeTimeoutClamped);
 
   /// Tracks the runway cache keeps ahead of the playhead, clamped so a
@@ -274,10 +285,11 @@ class AppSettings {
       miniPlayerShape: '${json['miniPlayerShape'] ?? 'circle'}',
       miniPlayerColor: '${json['miniPlayerColor'] ?? 'mint'}',
       miniPlayerUseImageColor: json['miniPlayerUseImageColor'] != false,
-      debugEnabled: json['debugEnabled'] == true,
+      debugEnabled: json['debugEnabled'] != false,
       showPlatformFilter: json['showPlatformFilter'] != false,
-      probeTimeoutSeconds: (json['probeTimeoutSeconds'] as num?)?.toInt() ?? 30,
-      probeConcurrency: (json['probeConcurrency'] as num?)?.toInt() ?? 3,
+      probeTimeoutSeconds: (json['probeTimeoutSeconds'] as num?)?.toInt() ?? 8,
+      probeConcurrency: (json['probeConcurrency'] as num?)?.toInt() ?? 8,
+      probeTuningV2Applied: json['probeTuningV2Applied'] == true,
       autoSourceRefresh: json['autoSourceRefresh'] != false,
       lastSourceRefreshAt:
           (json['lastSourceRefreshAt'] as num?)?.toInt() ?? 0,
@@ -319,6 +331,7 @@ class AppSettings {
         'showPlatformFilter': showPlatformFilter,
         'probeTimeoutSeconds': probeTimeoutSeconds,
         'probeConcurrency': probeConcurrency,
+        'probeTuningV2Applied': probeTuningV2Applied,
         'autoSourceRefresh': autoSourceRefresh,
         'lastSourceRefreshAt': lastSourceRefreshAt,
         'visibleSources': visibleSources,
