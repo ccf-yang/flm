@@ -52,6 +52,15 @@ Future<void> main() async {
       // plugin asserts that the two options cannot be combined, and it has
       // nothing to do here — a notification from a service that stays in the
       // foreground state is already non-dismissible.
+      //
+      // Necessary, not sufficient. One logged session on a HyperOS phone still
+      // lost five and a half minutes of watchdog ticks once the queue had *no*
+      // audio to output, and the two retries that followed landed inside the
+      // same second — the picture of a suspended process catching up, which also
+      // explains why headset presses during that window produced nothing at all.
+      // The ROM spares an app that is making sound, not a service that is only
+      // trying to get some, so the queue has to stay playable instead of relying
+      // on a backoff timer to wake it.
       androidStopForegroundOnPause: false,
     ),
   );
