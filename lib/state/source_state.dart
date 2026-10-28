@@ -327,6 +327,16 @@ class SourceState extends ChangeNotifier with WidgetsBindingObserver {
     return slot.engine.canRunInBackground;
   }
 
+  /// Whether *any* live sandbox — not just the active source's — can still answer
+  /// while backgrounded. A cross-source walk tries them all, so a frozen active
+  /// source must not shut the preloader down while another script happens to run
+  /// in-process. With no slot yet the answer is yes: fresh slots start on the
+  /// in-process engine.
+  bool get anyEngineRunsInBackground {
+    if (_slots.isEmpty) return true;
+    return _slots.values.any((slot) => slot.engine.canRunInBackground);
+  }
+
   /// Why the previous cross-source resolution failed (null after a success).
   String? get lastPoolError => _lastPoolError;
 
