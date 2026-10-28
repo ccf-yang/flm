@@ -264,6 +264,12 @@ class SourceEngine implements MusicSourceEngine {
       );
     } catch (error) {
       _requestWaiters.remove(requestKey);
+      // A send that fails outright means the page or its content process is gone.
+      // Now that `_loaded` survives activation, this is the other half of that
+      // story: without clearing the flag the sandbox would stay "ready" forever
+      // and every later request would fail identically, instead of the next one
+      // getting a fresh page through `_ensureReady`.
+      _loaded = false;
       throw StateError('自定义源请求发送失败: $error');
     }
 
