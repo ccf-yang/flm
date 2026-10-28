@@ -1366,7 +1366,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   int? _nextPlayableIndex() {
     final choices = _upcomingUnmarked(count: _maxAdvanceScan);
     if (choices.isEmpty) return null;
-    if (_appInForeground || sourceState.canResolveInBackground) {
+    if (_appInForeground || sourceState.anyEngineRunsInBackground) {
       return choices.first;
     }
     for (final item in choices) {
@@ -1657,8 +1657,9 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
         // cannot answer at all. Moving on to the next candidate keeps the search
         // alive for the songs that do have a file or a cached link on the device,
         // and stops the standby pass from timing out on all four sources every
-        // eight seconds.
-        if (!_appInForeground && !sourceState.canResolveInBackground) continue;
+        // eight seconds. Only the whole pool being frozen justifies skipping the
+        // walk — a frozen active source still has another, in-process script to ask.
+        if (!_appInForeground && !sourceState.anyEngineRunsInBackground) continue;
         final resolved = await sourceState.resolveMusicUrlAutoSwitch(
           song,
           background: !_appInForeground,
@@ -1749,10 +1750,10 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _prefetchLookahead() async {
     if (_disposed || _current == null) return;
     if (!sourceState.hasActiveSource) return;
-    // This pass exists only to resolve links. With a frozen iOS WebView behind
-    // the lock screen every entry in it would fail, so leave the sandbox alone
-    // until the app is back in the foreground.
-    if (!_appInForeground && !sourceState.canResolveInBackground) return;
+    // This pass exists only to resolve links. With every sandbox frozen (iOS, all
+    // scripts on the WebView) each entry would fail, so leave them alone until the
+    // app is back in the foreground.
+    if (!_appInForeground && !sourceState.anyEngineRunsInBackground) return;
     final now = DateTime.now();
     if (now.difference(_lastLookaheadAttempt) < const Duration(seconds: 45)) {
       return;
@@ -2198,9 +2199,10 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     if (index < 0 || index >= _queue.length) return false;
     final song = _queue[index];
     if (song.isLocal) return true;
-    // The custom-source script now runs in-process, so it can fetch a fresh
-    // link even while the lock screen is up.
-    if (sourceState.canResolveInBackground) return true;
+    // A source script that runs in-process — or a WebView on a platform that does
+    // not freeze it — can fetch a fresh link even while the lock screen is up, and
+    // starting this song would launch a walk across every enabled source.
+    if (sourceState.anyEngineRunsInBackground) return true;
     final preparedUrl = _plannedNextUrl;
     if (_plannedNextIndex == index &&
         preparedUrl != null &&
