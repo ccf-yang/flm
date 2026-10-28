@@ -39,8 +39,16 @@ Future<void> main() async {
     config: const AudioServiceConfig(
       androidNotificationChannelId: 'com.flm.music.channel.audio',
       androidNotificationChannelName: 'flm playback',
-      androidNotificationOngoing: true,
-      androidStopForegroundOnPause: true,
+      // Android demotes (and reserves the right to reclaim) the playback service
+      // the moment `playing` goes false, which happens every time the queue runs
+      // out of a playable track: Dart timers then stalled for six minutes in one
+      // logged session, and headset/car button presses stopped reaching the app
+      // entirely. Keeping the service in the foreground while it is silent is what
+      // lets the retry loop and the remote controls survive a bad stretch of
+      // sources. iOS ignores these two fields; the ongoing flag must stay false
+      // because the package asserts it cannot be combined with pause->background.
+      androidNotificationOngoing: false,
+      androidStopForegroundOnPause: false,
     ),
   );
 

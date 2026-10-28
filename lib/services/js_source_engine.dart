@@ -71,6 +71,12 @@ class JsSourceEngine implements MusicSourceEngine {
   @override
   WebViewController? get controller => null;
 
+  /// QuickJS evaluates inside the Dart isolate, which stays alive while audio
+  /// plays, so the JS -> native HTTP -> JS round trip keeps working behind the
+  /// lock screen on every platform.
+  @override
+  bool get canRunInBackground => true;
+
   /// Browser surface the LX sandbox expects. Everything here is deliberately
   /// small: the bundle guards every optional browser API (`navigator`,
   /// `MutationObserver`, `localStorage`, `crypto.subtle`, ...) with `typeof`,

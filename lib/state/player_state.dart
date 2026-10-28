@@ -1092,6 +1092,13 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       '代理',
       'ssl handshake',
       '无法解析地址',
+      // Our own walk control flow. A resolve that was cancelled by a newer play
+      // request or that ran out of budget says nothing about this track — marking
+      // it dead is what turned one slow source into "队列暂无可用资源".
+      '锁屏',
+      '需回前台',
+      '取链已被',
+      '超过时限',
     ]) {
       if (text.contains(needle) || lower.contains(needle)) return true;
     }
@@ -1646,9 +1653,20 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       if (!_preloading.add(key)) return;
       final epoch = _preloadEpoch;
       try {
+        // Behind the iOS lock screen a script that had to fall back to the WebView
+        // cannot answer at all. Moving on to the next candidate keeps the search
+        // alive for the songs that do have a file or a cached link on the device,
+        // and stops the standby pass from timing out on all four sources every
+        // eight seconds.
+        if (!_appInForeground && !sourceState.canResolveInBackground) continue;
         final resolved = await sourceState.resolveMusicUrlAutoSwitch(
           song,
           background: !_appInForeground,
+          // Preheating is not the load the listener is waiting for, but it must
+          // still not own the sandbox indefinitely: behind the lock screen one
+          // unbounded walk (observed at 22 s) sat in front of a headset double
+          // tap and made the skip look ignored.
+          budget: _appInForeground ? null : _backgroundResolveTimeout,
         );
         if (_disposed || epoch != _preloadEpoch) return;
         final url = '${resolved['url'] ?? ''}';
@@ -1731,6 +1749,10 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _prefetchLookahead() async {
     if (_disposed || _current == null) return;
     if (!sourceState.hasActiveSource) return;
+    // This pass exists only to resolve links. With a frozen iOS WebView behind
+    // the lock screen every entry in it would fail, so leave the sandbox alone
+    // until the app is back in the foreground.
+    if (!_appInForeground && !sourceState.canResolveInBackground) return;
     final now = DateTime.now();
     if (now.difference(_lastLookaheadAttempt) < const Duration(seconds: 45)) {
       return;
@@ -1760,6 +1782,10 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
         final resolved = await sourceState.resolveMusicUrlAutoSwitch(
           song,
           background: !_appInForeground,
+          // Six songs deep, each able to burn a whole source timeout: cap the
+          // background walk so a lookahead pass cannot hold the sandbox away from
+          // the track the user is actually asking for.
+          budget: _appInForeground ? null : _backgroundResolveTimeout,
         );
         if (_disposed || epoch != _preloadEpoch) return;
         final url = '${resolved['url'] ?? ''}';

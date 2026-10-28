@@ -19,6 +19,14 @@ abstract class MusicSourceEngine {
   /// Non-null only for engines that need a mounted [WebViewWidget].
   WebViewController? get controller;
 
+  /// Whether this engine can still answer a `musicUrl` request while the app is
+  /// backgrounded. iOS freezes the WKWebView content process behind the lock
+  /// screen, so a script that had to fall back to the WebView can only resolve
+  /// once the user opens the app again; Android keeps its WebView renderer alive
+  /// (the playback service holds the process up), and the in-process QuickJS
+  /// engine runs inside the Dart isolate on both platforms.
+  bool get canRunInBackground;
+
   Future<SourceCapabilities> activate(CustomSourceInfo info, String script);
 
   Future<Map<String, dynamic>> requestMusicUrl({
