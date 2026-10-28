@@ -734,7 +734,7 @@ class _IntroCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  '版本 1.0.7 · 安静的光，随处可听',
+                  '版本 1.0.8 · 安静的光，随处可听',
                   style: TextStyle(fontSize: 11, color: mutedFor(context)),
                 ),
               ],

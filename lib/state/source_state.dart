@@ -358,6 +358,46 @@ class SourceState extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  /// Keep playback pointing at a source after a batch operation moved them around.
+  ///
+  /// [resolveMusicUrlAutoSwitch] refuses to try the pool at all when nothing is
+  /// selected, so a run that replaced or deleted the selected script would leave a
+  /// page full of freshly measured sources while every song reported
+  /// 「尚未启用自定义源」. Selection is the one thing a batch cannot leave dangling:
+  /// prefer the ids in [preferredIds] (a run passes the ones it just proved can
+  /// serve a link), otherwise take the first enabled source. When nothing is left
+  /// enabled the stale id is cleared so the page reads 未启用 instead of naming a
+  /// source that no longer exists.
+  Future<CustomSourceInfo?> _ensureActiveSource({
+    List<String> preferredIds = const <String>[],
+  }) async {
+    final current = active;
+    if (current != null) return current;
+    final previous = appState.settings.activeSourceId;
+    final enabled = enabledSources;
+    if (enabled.isEmpty) {
+      if (previous != null) await setActive(null);
+      return null;
+    }
+    CustomSourceInfo? next;
+    for (final id in preferredIds) {
+      for (final candidate in enabled) {
+        if (candidate.id == id) {
+          next = candidate;
+          break;
+        }
+      }
+      if (next != null) break;
+    }
+    next ??= enabled.first;
+    await setActive(next);
+    debugLog?.record('批量操作后自动选用源', <String, Object?>{
+      '源': next.name,
+      '原因': previous == null ? '原先没有选中' : '原先选中的已不可用',
+    });
+    return next;
+  }
+
   /// Switch a source out of playback without deleting it. The stored selection
   /// is kept, so re-enabling the active source makes it take over again at once.
   Future<void> setDisabled(CustomSourceInfo source, bool disabled) async {
@@ -755,7 +795,9 @@ class SourceState extends ChangeNotifier with WidgetsBindingObserver {
     _supported.remove(id);
     _dropSlot(id);
     if (appState.settings.activeSourceId == id) {
-      await setActive(null);
+      // The song still needs a source to start from; hand over a live one rather
+      // than leaving playback on 「尚未启用自定义源」.
+      await _ensureActiveSource();
     } else {
       notifyListeners();
     }
@@ -1195,6 +1237,7 @@ class SourceState extends ChangeNotifier with WidgetsBindingObserver {
           );
           if (song == null) {
             judged = GroupProbeReport(
+              id: source.id,
               name: source.name,
               state: GroupProbeState.skipped,
               detail: '拿不到测试歌曲，未做任何改动',
@@ -1208,6 +1251,7 @@ class SourceState extends ChangeNotifier with WidgetsBindingObserver {
             );
             if (probe.ok) {
               judged = GroupProbeReport(
+                id: source.id,
                 name: source.name,
                 state: GroupProbeState.usable,
                 detail: source.disabled
@@ -1216,6 +1260,7 @@ class SourceState extends ChangeNotifier with WidgetsBindingObserver {
               );
             } else if (probe.headline == '缺少在线歌曲') {
               judged = GroupProbeReport(
+                id: source.id,
                 name: source.name,
                 state: GroupProbeState.skipped,
                 detail: '没有可测试的歌曲，未做任何改动',
@@ -1223,6 +1268,7 @@ class SourceState extends ChangeNotifier with WidgetsBindingObserver {
             } else {
               await repository.setDisabled(source.id, true);
               judged = GroupProbeReport(
+                id: source.id,
                 name: source.name,
                 state: GroupProbeState.disabled,
                 detail: '${probe.headline}：${probe.detail}',
@@ -1237,6 +1283,7 @@ class SourceState extends ChangeNotifier with WidgetsBindingObserver {
           // 超时按「取不到链」处理：用户设定的预算内答不上来，就是不能用的源。
           await repository.setDisabled(source.id, true);
           judged = GroupProbeReport(
+            id: source.id,
             name: source.name,
             state: GroupProbeState.disabled,
             detail: '${timeout.message}，已禁用',
@@ -1246,6 +1293,7 @@ class SourceState extends ChangeNotifier with WidgetsBindingObserver {
           // cannot serve one, so it goes the same way as a failed probe.
           await repository.setDisabled(source.id, true);
           judged = GroupProbeReport(
+            id: source.id,
             name: source.name,
             state: GroupProbeState.disabled,
             detail: '$error',
@@ -1265,6 +1313,15 @@ class SourceState extends ChangeNotifier with WidgetsBindingObserver {
 
     final disabledCount =
         reports.where((report) => report.state == GroupProbeState.disabled).length;
+    // A probe switches dead sources off, and a switched-off source cannot stay the
+    // selected one — so the run that just judged the group is also the one that has
+    // to hand playback a source it proved can serve a link.
+    await _ensureActiveSource(
+      preferredIds: reports
+          .where((report) => report.state == GroupProbeState.usable)
+          .map((report) => report.id)
+          .toList(growable: false),
+    );
     debugLog?.record('批量探测结束', <String, Object?>{
       '分组': sourceGroupName(group),
       '检测': reports.length,
@@ -1378,9 +1435,10 @@ class SourceState extends ChangeNotifier with WidgetsBindingObserver {
     // Scripts that the scan replaced no longer exist; drop their sandboxes.
     _dropMissingSlots();
     notifyListeners();
-    if (active == null && added.isNotEmpty) {
-      await setActive(added.first);
-    }
+    // Whatever was selected is gone with the old group, so take the first of the
+    // new one; the measurement that follows may still prove it dead, in which
+    // case 一键更新 picks again from what survived.
+    await _ensureActiveSource(preferredIds: added.map((source) => source.id).toList());
     debugLog?.record('批量导入源完成', <String, Object?>{
       '分组': sourceGroupName(group),
       '写入': added.length,
@@ -1394,11 +1452,9 @@ class SourceState extends ChangeNotifier with WidgetsBindingObserver {
     final removed = await repository.clearGroup(group);
     if (removed == 0) return 0;
     _dropMissingSlots();
-    if (active == null && appState.settings.activeSourceId != null) {
-      await setActive(null);
-    } else {
-      notifyListeners();
-    }
+    notifyListeners();
+    // 清空整组之后如果别的分组还有源，播放照样要有东西可试；一个都不剩才回落到未启用。
+    await _ensureActiveSource();
     debugLog?.record('清空分组 $group', <String, Object?>{'删除': removed});
     return removed;
   }
@@ -1473,6 +1529,9 @@ class SourceState extends ChangeNotifier with WidgetsBindingObserver {
     }
 
     final removed = await deleteDisabledSources(group: sourceGroupWeb);
+    final chosen = await _ensureActiveSource(
+      preferredIds: probe.usable.map((report) => report.id).toList(growable: false),
+    );
     final kept = repository.byGroup(sourceGroupWeb).length;
     await appState.update((settings) =>
         settings.lastSourceRefreshAt = DateTime.now().millisecondsSinceEpoch);
@@ -1481,6 +1540,7 @@ class SourceState extends ChangeNotifier with WidgetsBindingObserver {
       '禁用': disabled,
       '删除': removed,
       '剩余': kept,
+      '选用': chosen?.name ?? '无可用源',
       '耗时': '${DateTime.now().difference(started).inSeconds}s',
     });
     return SourceRefreshOutcome(
@@ -1488,6 +1548,7 @@ class SourceState extends ChangeNotifier with WidgetsBindingObserver {
       disabled: disabled,
       removed: removed,
       kept: kept,
+      activeName: chosen?.name,
     );
   }
 
@@ -1557,6 +1618,7 @@ class SourceRefreshOutcome {
     this.disabled = 0,
     this.removed = 0,
     this.kept = 0,
+    this.activeName,
     this.cancelled = false,
     this.error,
   });
@@ -1573,6 +1635,10 @@ class SourceRefreshOutcome {
   /// Sources left in the group afterwards.
   final int kept;
 
+  /// The source the run left selected, so the toast can say the queue is ready to
+  /// play instead of leaving the user to work out that a tap is still needed.
+  final String? activeName;
+
   /// Stopped before the whole group was measured, so nothing was deleted and the
   /// next launch tries again.
   final bool cancelled;
@@ -1586,7 +1652,10 @@ class SourceRefreshOutcome {
   String get summary {
     if (error != null) return error!;
     if (cancelled) return '已停止：写入 $imported 个，实测未完成，下次启动继续';
-    return '更新完成：写入 $imported 个，实测淘汰 $removed 个，剩 $kept 个可用';
+    final tail = kept == 0
+        ? '没有源通过实测，请再更新一次'
+        : '剩 $kept 个可用${activeName == null ? '' : '，已选用「$activeName」'}';
+    return '更新完成：写入 $imported 个，实测淘汰 $removed 个，$tail';
   }
 }
 
@@ -1711,11 +1780,15 @@ enum GroupProbeState {
 /// One line of a batch probe result.
 class GroupProbeReport {
   const GroupProbeReport({
+    required this.id,
     required this.name,
     required this.state,
     required this.detail,
   });
 
+  /// Which source this verdict is about, so a batch run can hand playback a
+  /// source it just proved works (see [_ensureActiveSource]).
+  final String id;
   final String name;
   final GroupProbeState state;
   final String detail;
