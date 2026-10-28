@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show Platform;
 
 import 'package:flutter/foundation.dart';
 import 'package:webview_flutter/webview_flutter.dart';
@@ -65,6 +66,14 @@ class SourceEngine implements MusicSourceEngine {
 
   @override
   WebViewController get controller => _controller;
+
+  /// iOS suspends the WKWebView content process once the app is backgrounded, so
+  /// a script running here stops answering `musicUrl` until the user unlocks and
+  /// opens the app. Android has no such freeze — the renderer keeps working while
+  /// the playback service holds the process alive.
+  @override
+  bool get canRunInBackground => !Platform.isIOS;
+
   @override
   CustomSourceInfo? get current => _current;
   @override

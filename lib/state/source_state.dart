@@ -316,14 +316,15 @@ class SourceState extends ChangeNotifier with WidgetsBindingObserver {
 
   bool get hasActiveSource => active != null && !capabilities.isEmpty;
 
-  /// True when the selected source's script runs in-process, so links can still
-  /// be resolved while iOS has frozen every WKWebView behind the lock screen.
+  /// True when the selected source's script can still resolve while the app is
+  /// backgrounded: either it runs in-process, or the platform does not freeze the
+  /// WebView it had to fall back to (only iOS does).
   bool get canResolveInBackground {
     final source = active;
     if (source == null) return false;
     final slot = _slots[source.id];
     if (slot == null) return true;
-    return slot.engine is JsSourceEngine;
+    return slot.engine.canRunInBackground;
   }
 
   /// Why the previous cross-source resolution failed (null after a success).
@@ -492,7 +493,11 @@ class SourceState extends ChangeNotifier with WidgetsBindingObserver {
       if (active?.id == source.id) error = null;
       debugLog?.record('源就绪 ${source.name}', <String, Object?>{
         '平台': names.join('、'),
-        '引擎': slot.engine is JsSourceEngine ? 'JS（锁屏可用）' : 'WebView',
+        // Engine plus whether it can still answer while backgrounded. This is the
+        // line that separates "the sources are dead" from "the sandbox is frozen":
+        // a WebView fallback only hurts on iOS, where the content process sleeps.
+        '引擎': slot.engine is JsSourceEngine ? 'JS（进程内）' : 'WebView',
+        '锁屏可取链': slot.engine.canRunInBackground,
       });
     } catch (e) {
       slot.ready = false;
@@ -520,9 +525,12 @@ class SourceState extends ChangeNotifier with WidgetsBindingObserver {
       return await slot.engine.activate(source, script);
     } on JsEngineUnavailable catch (error) {
       if (slot.engine is! JsSourceEngine) rethrow;
-      debugLog?.record('JS 后台引擎不可用，回退 WebView', <String, Object?>{
+      debugLog?.record('脚本回退 WebView 沙箱', <String, Object?>{
         '源': source.name,
         '原因': error.message,
+        // Says what the fallback costs on this device: on iOS lock-screen
+        // resolution stops working, on Android the WebView keeps running.
+        '锁屏可取链': !Platform.isIOS,
       });
       await (slot.engine as JsSourceEngine).dispose();
       slot.engine = SourceEngine(http);
@@ -900,7 +908,7 @@ class SourceState extends ChangeNotifier with WidgetsBindingObserver {
           '探测': probe.networkFailed
               ? '请求失败（仍尝试播放）'
               : 'HTTP ${probe.status} ${probe.contentType.isEmpty ? '未知类型' : probe.contentType}',
-          '长度': probe.length < 0 ? '未知' : probe.length,
+          '长度': probe.lengthLabel,
           '脚本耗时': '${DateTime.now().difference(attemptStarted).inMilliseconds}ms',
           '探测耗时': '${probe.elapsedMs}ms',
         });
@@ -990,6 +998,7 @@ class SourceState extends ChangeNotifier with WidgetsBindingObserver {
 
     Object? lastError;
     var tried = 0;
+    var skippedFrozen = 0;
     for (final candidate in candidates) {
       tried++;
       // Checked *between* sources as well as between qualities: one source alone
@@ -1008,11 +1017,19 @@ class SourceState extends ChangeNotifier with WidgetsBindingObserver {
         throw StateError(cancelled ? '取链已被新的播放请求取消' : '取链已超过时限');
       }
       final existing = _slots[candidate.id];
-      // Behind the lock screen a WebView sandbox cannot answer: its JavaScript
-      // is frozen. Skipping those candidates immediately beats waiting for a
-      // 30 s timeout for every source. A source with no live slot yet is still
-      // worth initializing — new slots use the in-process engine.
-      if (background && existing != null && existing.engine is! JsSourceEngine) {
+      // On iOS the WKWebView content process is frozen once the screen locks, so a
+      // script that had to fall back to that sandbox cannot answer at all until the
+      // user opens the app again. Skipping those candidates immediately beats
+      // waiting out a 30 s timeout for every source. The in-process engine and
+      // Android's WebView both keep running, so they are always attempted.
+      if (background && existing != null && !existing.engine.canRunInBackground) {
+        skippedFrozen++;
+        // Named rather than left null: without this the walk dies as the generic
+        // "没有可用的自定义源返回播放链接", which reads like every source failed and
+        // hides that nothing was even tried.
+        lastError ??= StateError(
+          '锁屏时取不到链：${candidate.name} 跑在 iOS 冻结的 WebView 里，需回前台',
+        );
         continue;
       }
       final slot = existing;
@@ -1052,6 +1069,10 @@ class SourceState extends ChangeNotifier with WidgetsBindingObserver {
       '最后错误': _lastPoolError ?? '$failure',
       '已试源': tried,
       '候选源': candidates.length,
+      // Only ever non-zero on iOS with WebView-fallback sources: it says the walk
+      // gave up because the sandboxes were frozen, not because the sources answered
+      // badly.
+      '被锁屏跳过': skippedFrozen,
       '耗时': '${DateTime.now().difference(startedAt).inMilliseconds}ms',
     });
     throw failure;
