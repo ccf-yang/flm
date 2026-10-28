@@ -247,6 +247,10 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   /// retries the queue on [_stockRetryLead] intervals.
   bool _waitingForStock = false;
   DateTime _nextStockRetryAt = DateTime.fromMillisecondsSinceEpoch(0);
+
+  /// Last time the watchdog noted that a stock wait was parked behind an unfinished
+  /// load, so the observation costs one line per window rather than one per tick.
+  DateTime? _lastStockWaitNote;
   static const Duration _stockRetryLeadForeground = Duration(seconds: 20);
   static const Duration _stockRetryLeadBackground = Duration(seconds: 60);
 
@@ -317,10 +321,13 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   /// A resolve started while backgrounded is waiting on frozen JavaScript, so cap
   /// how long an advance blocks on it. Returning to the foreground restarts the
   /// load once JavaScript runs again.
-  // The in-process source engine can resolve while backgrounded; 12 s used to
-  // be the safe ceiling for a frozen WebView, but a real cross-source lookup
-  // (script -> native HTTP -> probe) can legitimately take longer.
-  static const Duration _backgroundResolveTimeout = Duration(seconds: 25);
+  // The in-process source engine can resolve while backgrounded, so this is no
+  // longer about frozen JavaScript — it is about *responsiveness*: a cross-source
+  // walk tries every enabled script and every quality ladder, which can run for
+  // minutes. Behind the lock screen that is far longer than a skip should take, so
+  // the walk is given a budget, cut short when it overruns, and cancelled outright
+  // so the abandoned work stops holding the sandbox against the next attempt.
+  static const Duration _backgroundResolveTimeout = Duration(seconds: 12);
 
   /// How long a start may wait for the *following* link to be resolved. The
   /// standby has to be armed before the screen can lock, but a slow source must
@@ -330,6 +337,11 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   /// A remote pause arriving this soon after a remote skip is treated as part
   /// of the same head-unit button press, not as a deliberate pause.
   static const Duration _remotePauseGuard = Duration(milliseconds: 1200);
+
+  /// Two skip commands this close together are one press. Most head units and
+  /// true-wireless earbuds deliver a double tap as an AVRCP press *and* a
+  /// repeated event, and honouring both silently consumes a second song.
+  static const Duration _remoteSkipDebounce = Duration(milliseconds: 350);
 
   /// How long a resolved link is trusted for, how close to that deadline it gets
   /// re-fetched while the app is awake, and how many links are kept.
@@ -497,7 +509,22 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     // it to the player would only repeat the failed load every fifteen seconds,
     // while the user still hears nothing.
     if (_waitingForStock) {
-      if (_loading) return;
+      if (_loading) {
+        // The retry cadence is parked behind a load that has not finished. Worth a
+        // line in the log: it is the state where a headset press looks ignored,
+        // so note it on its own clock instead of silently returning every tick.
+        final noteAt = _lastStockWaitNote;
+        if (noteAt == null || now.difference(noteAt) > const Duration(seconds: 30)) {
+          _lastStockWaitNote = now;
+          debugLog?.record('等待资源中，但加载仍未结束 ${_current?.name}', <String, Object?>{
+            '已加载': started == null ? '-' : '${now.difference(started).inSeconds}s',
+            '链接已到手': _handedOff,
+            '前台': _appInForeground,
+            '下次重试': '${_nextStockRetryAt.difference(now).inSeconds}s',
+          });
+        }
+        return;
+      }
       if (now.isBefore(_nextStockRetryAt)) {
         // Keep preparing during the wait: a late link or a finished download is
         // exactly what ends it. The session gets re-claimed once per background
@@ -532,6 +559,9 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
         _statusText = '锁屏时取不到链接，正在用已缓存的地址继续';
         _resumeOnForeground = true;
         _notify();
+        // Stop the walk, do not just stop waiting for it: the abandoned resolve is
+        // otherwise still occupying the script while the next attempt needs it.
+        sourceState.cancelResolutions(reason: '后台取链停滞，改用已缓存地址');
         unawaited(_handleCompleted());
       }
       return;
@@ -1428,23 +1458,39 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
           !_appInForeground && !sourceState.canResolveInBackground;
       if (cannotResolve || !_isGoingStale(cached, now)) return cached.url;
     }
+    final startedAt = DateTime.now();
     final pending = sourceState.resolveMusicUrlAutoSwitch(
       song,
       background: !_appInForeground,
+      budget: _appInForeground ? null : _backgroundResolveTimeout,
     );
     try {
       final resolved = _appInForeground
           ? await pending
           : await pending.timeout(
               _backgroundResolveTimeout,
-              onTimeout: () => throw StateError(
-                '后台取链超时，回前台后会自动重试',
-              ),
+              onTimeout: () {
+                // Nothing in this future will ever answer now, and letting it run
+                // would keep the sandbox busy for the attempt that follows it.
+                debugLog?.record('后台取链超时，取消这条取链 ${song.name}', <String, Object?>{
+                  '预算': '${_backgroundResolveTimeout.inSeconds}s',
+                  '前台': _appInForeground,
+                  '在加载': _loading,
+                });
+                sourceState.cancelResolutions(reason: '后台取链超时：${song.name}');
+                throw StateError('后台取链超时，回前台后会自动重试');
+              },
             );
       final url = '${resolved['url'] ?? ''}';
       if (url.isEmpty) throw StateError('没有获取到播放链接');
       _cacheUrl(key, url, type: '${resolved['type'] ?? 'mp3'}');
       unawaited(_stockFromUrl(song));
+      if (!_appInForeground) {
+        debugLog?.record('后台取链成功 ${song.name}', <String, Object?>{
+          '耗时': '${DateTime.now().difference(startedAt).inMilliseconds}ms',
+          '预算': '${_backgroundResolveTimeout.inSeconds}s',
+        });
+      }
       return url;
     } catch (error) {
       // A refresh that failed must not lose the song we could still play.
@@ -2013,33 +2059,97 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     await service.seek(position);
   }
 
-  /// Skip commands coming from the lock screen, a Bluetooth headset or a car
-  /// head unit. The timestamp lets a pause sent as part of the same button
-  /// press be recognised and ignored.
+  /// Skip commands coming from the lock screen, a Bluetooth headset or a car head
+  /// unit.
+  ///
+  /// Three things make a press land instead of vanishing:
+  /// * the command is answered immediately. The platform waits on this future, and
+  ///   a skip that has to fetch a link waits on a cross-source walk, so the work is
+  ///   started and the handler returns — otherwise iOS keeps the now-playing UI on
+  ///   the old track and later presses queue behind the first one;
+  /// * a second event inside [_remoteSkipDebounce] is the *same* physical press
+  ///   (head units and true-wireless earbuds send a press plus a repeated event),
+  ///   so a double tap costs one song rather than two;
+  /// * the skip is forced: a load still parked on link fetching is superseded at
+  ///   once and its unfinished walk is cancelled, so the sandbox is free for the
+  ///   song the user just asked for.
   Future<void> _handleRemoteSkipNext() async {
-    _lastRemoteSkipAt = DateTime.now();
+    final now = DateTime.now();
+    final sinceLast = now.difference(_lastRemoteSkipAt);
+    _lastRemoteSkipAt = now;
     _ignoreRemotePause = false;
+    if (sinceLast < _remoteSkipDebounce) {
+      debugLog?.record('同一按键的第二个「下一首」，忽略', <String, Object?>{
+        '距上次': '${sinceLast.inMilliseconds}ms',
+        '当前': _current?.name,
+        '在加载': _loading,
+      });
+      return;
+    }
     debugLog?.record('系统/蓝牙下一首', <String, Object?>{
       '前台': _appInForeground,
       '当前': _current?.name,
       '预排': _plannedNextSong?.name,
       '在播': _isPlaying,
       '在加载': _loading,
+      '链接已到手': _handedOff,
       '位置': '${_position.inSeconds}s',
+      '距上次': '${sinceLast.inMilliseconds}ms',
     });
-    await next();
+    unawaited(_forcedSkip(toNext: true));
   }
 
   Future<void> _handleRemoteSkipPrevious() async {
-    _lastRemoteSkipAt = DateTime.now();
+    final now = DateTime.now();
+    final sinceLast = now.difference(_lastRemoteSkipAt);
+    _lastRemoteSkipAt = now;
     _ignoreRemotePause = false;
+    if (sinceLast < _remoteSkipDebounce) {
+      debugLog?.record('同一按键的第二个「上一首」，忽略', <String, Object?>{
+        '距上次': '${sinceLast.inMilliseconds}ms',
+        '当前': _current?.name,
+        '在加载': _loading,
+      });
+      return;
+    }
     debugLog?.record('系统/蓝牙上一首', <String, Object?>{
       '前台': _appInForeground,
       '当前': _current?.name,
       '在播': _isPlaying,
       '位置': '${_position.inSeconds}s',
+      '距上次': '${sinceLast.inMilliseconds}ms',
     });
-    await previous();
+    unawaited(_forcedSkip(toNext: false));
+  }
+
+  /// Take over whatever the controller is busy with and run the skip.
+  Future<void> _forcedSkip({required bool toNext}) async {
+    if (_loading) {
+      final started = _loadStartedAt;
+      debugLog?.record('强制切歌，作废进行中的加载 ${_current?.name}', <String, Object?>{
+        '已等': started == null ? '-' : '${DateTime.now().difference(started).inMilliseconds}ms',
+        '链接已到手': _handedOff,
+        '前台': _appInForeground,
+        '触发': toNext ? '下一首' : '上一首',
+        '本轮已跳': _skippedThisRound.length,
+      });
+      _playToken++;
+      _loading = false;
+      _statusText = null;
+      _notify();
+      sourceState.cancelResolutions(
+        reason: toNext ? '蓝牙/车载下一首' : '蓝牙/车载上一首',
+      );
+    }
+    try {
+      if (toNext) {
+        await next(force: true);
+      } else {
+        await previous();
+      }
+    } catch (error) {
+      debugLog?.record('强制切歌异常', <String, Object?>{'错误': '$error'});
+    }
   }
 
   /// System pause. A pause that head units send together with next/previous is
@@ -2085,7 +2195,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     return null;
   }
 
-  Future<void> next({bool auto = false}) async {
+  Future<void> next({bool auto = false, bool force = false}) async {
     _userPaused = false;
     if (_queue.isEmpty) return;
     if (_current == null) {
@@ -2160,14 +2270,24 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
             '模式': playMode.label,
             '本轮已跳': _skippedThisRound.length,
             '已下整曲': runway?.cachedCount,
+            '强制': force,
           });
-          // The advance owns the recovery: it re-derives the order, walks past
-          // what this pass skipped, and falls back to local stock.
-          _waitingForStock = false;
-          await next(auto: true);
-          return;
+          if (force) {
+            // A press on a headset or a steering wheel outranks the queue's own
+            // verdict: move onto the track that was asked for and take another
+            // shot at it, rather than handing the press to the automatic planner,
+            // which can land back on "nothing to play" and swallow the tap.
+            _waitingForStock = false;
+          } else {
+            // The advance owns the recovery: it re-derives the order, walks past
+            // what this pass skipped, and falls back to local stock.
+            _waitingForStock = false;
+            await next(auto: true);
+            return;
+          }
+        } else {
+          candidate = stock;
         }
-        candidate = stock;
       }
       nextIndex = candidate;
     }
@@ -2181,9 +2301,10 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     debugLog?.record('切歌 → ${_queue[nextIndex].name}', <String, Object?>{
-      '触发': auto ? '自动（上一首播完）' : '手动',
+      '触发': auto ? '自动（上一首播完）' : (force ? '强制（耳机/车载）' : '手动'),
       '前台': _appInForeground,
       '链接已缓存': _hasUsableCache(_queue[nextIndex]),
+      '整曲已缓存': _runwayPath(_queue[nextIndex]) != null,
       '播放模式': playMode.label,
     });
     await playSong(_queue[nextIndex],

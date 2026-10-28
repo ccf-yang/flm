@@ -63,7 +63,21 @@ Future<void> main() async {
   } catch (_) {}
 
   final appState = AppState(settingsRepository);
+  // One-shot: the shipped batch-detection defaults became 8s per source and 8
+  // sources at a time. A device that already stored the old numbers keeps them
+  // forever unless this passes through once; anything tuned afterwards is kept.
+  if (!appState.settings.probeTuningV2Applied) {
+    appState.settings
+      ..probeTimeoutSeconds = 8
+      ..probeConcurrency = 8
+      ..probeTuningV2Applied = true;
+    unawaited(appState.repository.save());
+  }
   final debugLog = DebugLog(enabled: appState.settings.debugEnabled);
+  // Opens the log file and pulls back the tail of the previous run: the point of
+  // the trace is a stall that happened while nobody was looking, so it has to
+  // survive a crash and a relaunch.
+  unawaited(debugLog.warmUp());
   httpBridge.debugLog = debugLog;
   final onlineEngine = OnlineEngine(httpBridge)..debugLog = debugLog;
   // Hidden cache of the next few tracks' whole files, so a track boundary is a

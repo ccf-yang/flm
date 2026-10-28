@@ -38,8 +38,13 @@ class HttpBridge {
   /// probe would then read as "this source is dead".
   int nextRequestId() => ++_idSeq;
 
-  /// When non-null and its `enabled` flag is on, every request/response is
-  /// mirrored here for the in-app debug page.
+  /// When non-null and its `enabled` flag is on, request *failures* are mirrored
+  /// to the in-app debug page.
+  ///
+  /// The full url / headers / body / response dump is gone: it buried the playback
+  /// trace that the debug page exists for, and a source script can issue dozens of
+  /// requests per song. Anything that still needs to be seen here arrives as a
+  /// resolve error on the source's own log line.
   DebugLog? debugLog;
 
   Future<Map<String, dynamic>> request(
@@ -104,10 +109,6 @@ class HttpBridge {
         : null;
     final cancelToken = CancelToken();
     _cancelTokens[id] = cancelToken;
-    debugLog?.record('HTTP $method $url', <String, Object?>{
-      '请求头': headers,
-      '请求体': data,
-    });
 
     try {
       final response = await _dio.request<dynamic>(
@@ -146,12 +147,13 @@ class HttpBridge {
         textBody = responseData is String ? responseData : jsonEncode(responseData);
       }
 
-      debugLog?.record(
-          'HTTP 响应 ${response.statusCode ?? 0} $url', <String, Object?>{
-        '耗时': '${DateTime.now().difference(startedAt).inMilliseconds}ms',
-        '响应头': responseHeaders,
-        '响应体': textBody,
-      });
+      final status = response.statusCode ?? 0;
+      if (status >= 400) {
+        debugLog?.record('HTTP $status $url', <String, Object?>{
+          '耗时': '${DateTime.now().difference(startedAt).inMilliseconds}ms',
+          '响应头': responseHeaders,
+        });
+      }
 
       return <String, dynamic>{
         'statusCode': response.statusCode ?? 0,
