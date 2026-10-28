@@ -39,15 +39,28 @@ Future<void> main() async {
     config: const AudioServiceConfig(
       androidNotificationChannelId: 'com.flm.music.channel.audio',
       androidNotificationChannelName: 'flm playback',
-      // Android demotes (and reserves the right to reclaim) the playback service
-      // the moment `playing` goes false, which happens every time the queue runs
-      // out of a playable track: Dart timers then stalled for six minutes in one
-      // logged session, and headset/car button presses stopped reaching the app
-      // entirely. Keeping the service in the foreground while it is silent is what
-      // lets the retry loop and the remote controls survive a bad stretch of
-      // sources. iOS ignores these two fields; the ongoing flag must stay false
-      // because the package asserts it cannot be combined with pause->background.
-      androidNotificationOngoing: false,
+      // Keep the foreground service — and the wake lock that comes with it — up
+      // through *every* pause. audio_service leaves the foreground state and
+      // releases the wake lock each time `playing` falls to false, which on
+      // Android happens at track boundaries without a prepared standby, during
+      // the silence watchdog's re-arm, and while a notification briefly steals
+      // audio focus. Even a momentary demotion lets the OEM freezer kill the
+      // process, and that is what users experience as background playback
+      // cutting out.
+      //
+      // `androidNotificationOngoing` is deliberately left at its default: the
+      // plugin asserts that the two options cannot be combined, and it has
+      // nothing to do here — a notification from a service that stays in the
+      // foreground state is already non-dismissible.
+      //
+      // Necessary, not sufficient. One logged session on a HyperOS phone still
+      // lost five and a half minutes of watchdog ticks once the queue had *no*
+      // audio to output, and the two retries that followed landed inside the
+      // same second — the picture of a suspended process catching up, which also
+      // explains why headset presses during that window produced nothing at all.
+      // The ROM spares an app that is making sound, not a service that is only
+      // trying to get some, so the queue has to stay playable instead of relying
+      // on a backoff timer to wake it.
       androidStopForegroundOnPause: false,
     ),
   );
